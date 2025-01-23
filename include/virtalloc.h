@@ -1,0 +1,25 @@
+#ifndef TINY_ALLOC_LIBRARY_H
+#define TINY_ALLOC_LIBRARY_H
+
+typedef void *vap_t;
+
+vap_t virtalloc_new_virtual_allocator_from(size_t size, char memory[static size], int flags);
+
+vap_t virtalloc_new_virtual_allocator(size_t size, int flags);
+
+void virtalloc_destroy_virtual_allocator(vap_t allocator);
+
+void *virtalloc_realloc(vap_t allocator, void *p, size_t size);
+
+void virtalloc_free(vap_t allocator, void *p);
+
+void *virtalloc_malloc(vap_t allocator, size_t size);
+
+#define VIRTALLOC_FLAG_VA_HAS_CHECKSUM 0x1
+#define VIRTALLOC_FLAG_VA_HAS_NON_CHECKSUM_SAFETY_CHECKS 0x2
+#define VIRTALLOC_FLAG_VA_HAS_SAFETY_CHECKS 0x3
+#define VIRTALLOC_FLAG_VA_FEW_BUCKETS 0x4
+#define VIRTALLOC_FLAG_VA_MANY_BUCKETS 0x0  // not a real setting, just uses default num buckets
+#define VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS VIRTALLOC_FLAG_VA_HAS_SAFETY_CHECKS
+
+#endif
