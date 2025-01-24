@@ -3,15 +3,13 @@
 
 #include <stddef.h>
 #include "virtalloc/cross_platform_lock.h"
+#include "virtalloc/alloc_settings.h"
 
 // TODO support lazy memory claiming: allow a parameter that tells the VA that size of buffer is currently X bytes and
 // to just realloc when more data is needed for further allocations.
-// TODO add a bucket mechanism where you have an array of minimum size and the smallest free slot that has at least
-// this size. This way you can just do linear search (or binary search) through the buckets by checking the bucket
-// sizes and once you have identified the smallest bucket that is big enough for your requested allocation size, you
-// look up the entry for the smallest slot that falls into this category (through the pointer stored in the bucket).
-// Then, you alloc that and using the sorted-by-size linked list of free slots, you update the bucket index and the
-// related heap metadata (especially the sorted-by-size free slot linked list).
+// TODO if a specific bucket size pattern can be assumed (eg a specific growth factor per bucket), then you may actually
+// be able to do better than linear search through the buckets (e.g. instead of linear search, binary search more or
+// less by repeated squaring exponentiation that then tells you how much to advance exponentially).
 // TODO find a good minimum allocation size (eg 16 bytes of usable space)
 // TODO add an alignment mechanism for size categories. Eg 16-64 bytes -> align 16 byte, >= 64 byte -> align 64 byte
 // TODO small alloc optimization: the metadata struct is way too big (64 bytes) for small allocations, so I have to
@@ -39,7 +37,7 @@ typedef struct VirtualAllocator {
     void *(*malloc)(struct VirtualAllocator *allocator, size_t size, size_t max_backward_exploration_steps);
 
     /// reallocation function
-    void *(*realloc)(struct VirtualAllocator *allocator, void *p, size_t size);
+    void *(*realloc)(struct VirtualAllocator *allocator, void *p, size_t size, size_t max_backward_exploration_steps);
 
     /// free function
     void (*free)(struct VirtualAllocator *allocator, void *p);
@@ -62,7 +60,7 @@ typedef struct VirtualAllocator {
     unsigned memory_is_owned: 1;
     /// may be set if the user guarantees thread safe usage of the allocator to remove the global allocator lock
     unsigned assume_thread_safe_usage: 1;
-} VirtualAllocator;
+} VirtualAllocator __attribute__((aligned(ALLOCATION_ALIGN)));
 
 void lock_virtual_allocator(VirtualAllocator *allocator);
 

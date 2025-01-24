@@ -1,7 +1,7 @@
 #ifndef MEMORY_SLOT_H
 #define MEMORY_SLOT_H
 
-#include <stddef.h>
+#include "virtalloc/alloc_settings.h"
 
 // TODO small meta optimization: create a second metadata struct that is as small as possible and has the same initial
 // layout but a different meta_type
@@ -13,7 +13,7 @@
 /// the metadata in front of a heap slot
 typedef struct MemorySlotMeta {
     /// tells the allocator what type of metadata this is
-    char meta_type;
+    int meta_type;
     /// a checksum that can help detect double free's
     int checksum;
     /// size of this slot's data section
@@ -30,6 +30,6 @@ typedef struct MemorySlotMeta {
     void *next_smaller_free;
     /// whether it is a free slot or allocated
     unsigned is_free: 1;
-} MemorySlotMeta;
+} MemorySlotMeta __attribute__((aligned(ALLOCATION_ALIGN)));
 
 #endif

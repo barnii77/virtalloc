@@ -6,18 +6,16 @@
 #include "virtalloc/virtual_allocator.h"
 #include "virtalloc/memory_slot_meta.h"
 #include "virtalloc/allocator.h"
-
-#include "virtalloc.h"
 #include "virtalloc/allocator_utils.h"
 #include "virtalloc/alloc_settings.h"
 
 void *virtalloc_malloc_impl(VirtualAllocator *allocator, size_t size, size_t max_backward_exploration_steps) {
     allocator->pre_alloc_op_callback(allocator);
 
-    size = size < MIN_ALLOCATION_SIZE ? MIN_ALLOCATION_SIZE : size;
+    size = align_to(size < MIN_ALLOCATION_SIZE ? MIN_ALLOCATION_SIZE : size, ALLOCATION_ALIGN);
     const size_t bucket_idx = get_bucket_index(allocator, size);
     MemorySlotMeta *meta = NULL;
-    if (bucket_idx == allocator->num_buckets - 1) {
+    if (bucket_idx == allocator->num_buckets - 1 && allocator->bucket_sizes[bucket_idx] < size) {
         // TODO here it may actually make sense to do forward exploration as a special case before trying backward expl
         const MemorySlotMeta *smallest_meta = get_meta(allocator, allocator->bucket_values[0], EXPECT_IS_FREE);
         // get the biggest free slot (the next smaller one links to the biggest one because the list is circular)
@@ -57,7 +55,7 @@ void *virtalloc_malloc_impl(VirtualAllocator *allocator, size_t size, size_t max
         // remaining slot would be too small, just convert the current slot to an allocated one
         unbind_from_sorted_free_list(allocator, meta);
         meta->is_free = 0;
-        refresh_checksum_of(meta);
+        refresh_checksum_of(allocator, meta);
     } else {
         // split into 2 slots
         MemorySlotMeta *next_meta = get_meta(allocator, meta->next, NO_EXPECTATION);
@@ -79,15 +77,15 @@ void *virtalloc_malloc_impl(VirtualAllocator *allocator, size_t size, size_t max
         meta->next = new_slot_data;
         next_meta->prev = new_slot_data;
 
-        refresh_checksum_of(meta);
-        refresh_checksum_of(next_meta);
-        refresh_checksum_of(new_slot_meta_ptr);
+        refresh_checksum_of(allocator, meta);
+        refresh_checksum_of(allocator, next_meta);
+        refresh_checksum_of(allocator, new_slot_meta_ptr);
 
         insert_into_sorted_free_list(allocator, new_slot_meta_ptr);
 
-        refresh_checksum_of(meta);
-        refresh_checksum_of(next_meta);
-        refresh_checksum_of(new_slot_meta_ptr);
+        refresh_checksum_of(allocator, meta);
+        refresh_checksum_of(allocator, next_meta);
+        refresh_checksum_of(allocator, new_slot_meta_ptr);
     }
     allocator->post_alloc_op_callback(allocator);
     return meta->data;
@@ -99,22 +97,23 @@ void virtalloc_free_impl(VirtualAllocator *allocator, void *p) {
     MemorySlotMeta *meta = get_meta(allocator, p, EXPECT_IS_ALLOCATED);
 
     meta->is_free = 1;
-    refresh_checksum_of(meta);
+    refresh_checksum_of(allocator, meta);
 
     coalesce_memory_slots(allocator, meta, 0);
 
-    refresh_checksum_of(meta);
+    refresh_checksum_of(allocator, meta);
 
     allocator->post_alloc_op_callback(allocator);
 }
 
-// TODO add settings to control the BACKWARDS_EXPLORATION_LIMIT parameter
-void *virtalloc_realloc_impl(VirtualAllocator *allocator, void *p, size_t size) {
+void *virtalloc_realloc_impl(VirtualAllocator *allocator, void *p, size_t size,
+                             const size_t max_backward_exploration_steps) {
     allocator->pre_alloc_op_callback(allocator);
 
     if (!p)
-        return virtalloc_malloc_impl(allocator, size, BACKWARDS_EXPLORATION_LIMIT);
+        return virtalloc_malloc_impl(allocator, size, max_backward_exploration_steps);
 
+    size = align_to(size < MIN_ALLOCATION_SIZE ? MIN_ALLOCATION_SIZE : size, ALLOCATION_ALIGN);
     MemorySlotMeta *meta = get_meta(allocator, p, EXPECT_IS_ALLOCATED);
     MemorySlotMeta *next_meta = get_meta(allocator, meta->next, NO_EXPECTATION);
     const size_t growth_bytes = size - meta->size;
@@ -129,7 +128,6 @@ void *virtalloc_realloc_impl(VirtualAllocator *allocator, void *p, size_t size) 
             return NULL;
         }
         // downsize the slot
-        size = size < MIN_ALLOCATION_SIZE ? MIN_ALLOCATION_SIZE : size;
         const size_t shaved_off = meta->size - size;
         if (next_meta->is_free && next_meta->data - sizeof(*next_meta) == meta->data + meta->size) {
             // merge it into the next slot because it is a free, contiguous neighbour slot
@@ -155,14 +153,14 @@ void *virtalloc_realloc_impl(VirtualAllocator *allocator, void *p, size_t size) 
             meta->next = new_slot_data;
             next_meta->prev = new_slot_data;
 
-            refresh_checksum_of(meta);
-            refresh_checksum_of(next_meta);
+            refresh_checksum_of(allocator, meta);
+            refresh_checksum_of(allocator, next_meta);
 
             insert_into_sorted_free_list(allocator, new_slot_meta_ptr);
 
-            refresh_checksum_of(meta);
-            refresh_checksum_of(next_meta);
-            refresh_checksum_of(new_slot_meta_ptr);
+            refresh_checksum_of(allocator, meta);
+            refresh_checksum_of(allocator, next_meta);
+            refresh_checksum_of(allocator, new_slot_meta_ptr);
         }
         allocator->post_alloc_op_callback(allocator);
         return p;
@@ -174,7 +172,7 @@ void *virtalloc_realloc_impl(VirtualAllocator *allocator, void *p, size_t size) 
         return p;
     } else {
         // must relocate the memory
-        void *new_memory = virtalloc_malloc_impl(allocator, size, BACKWARDS_EXPLORATION_LIMIT);
+        void *new_memory = virtalloc_malloc_impl(allocator, size, max_backward_exploration_steps);
         memmove(new_memory, p, meta->size);
         virtalloc_free_impl(allocator, p);
         allocator->post_alloc_op_callback(allocator);

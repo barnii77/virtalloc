@@ -11,6 +11,9 @@
 vap_t new_virtual_allocator_from_impl(const size_t size, char memory[static size], const int flags,
                                       const int memory_is_owned) {
     const size_t num_buckets = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS ? NUM_BUCKETS_FEW_BUCKET_MODE : NUM_BUCKETS;
+    const double bucket_growth_factor = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS
+                                            ? BUCKET_SIZE_GROWTH_FACTOR_FEW_BUCKET_MODE
+                                            : BUCKET_SIZE_GROWTH_FACTOR;
     if (size < sizeof(VirtualAllocator) + num_buckets * sizeof(size_t) + num_buckets * sizeof(void *))
         return NULL;
     ThreadLock tl;
@@ -34,10 +37,10 @@ vap_t new_virtual_allocator_from_impl(const size_t size, char memory[static size
     *(VirtualAllocator *) memory = va;
 
     // initialize bucket sizes and values
-    size_t current_bucket_size = MIN_ALLOCATION_SIZE;
+    double current_bucket_size = MIN_ALLOCATION_SIZE;
     for (size_t i = 0; i < va.num_buckets; i++) {
-        va.bucket_sizes[i] = current_bucket_size;
-        current_bucket_size = (size_t) (BUCKET_SIZE_GROWTH_FACTOR * (double) current_bucket_size);
+        va.bucket_sizes[i] = (size_t) current_bucket_size;
+        current_bucket_size *= bucket_growth_factor;
     }
     memset(va.bucket_values, 0, va.num_buckets * sizeof(void *));
 
@@ -50,16 +53,11 @@ vap_t new_virtual_allocator_from_impl(const size_t size, char memory[static size
             .next_smaller_free = va.first_slot, .is_free = 1
         };
         *first_slot_meta_ptr = first_slot_meta_content;
-        refresh_checksum_of(first_slot_meta_ptr);
+        refresh_checksum_of(&va, first_slot_meta_ptr);
 
-        for (size_t bi = 0; bi < va.num_buckets; bi++) {
-            if (va.bucket_sizes[bi] <= remaining_slot_size) {
+        for (size_t bi = 0; bi < va.num_buckets; bi++)
+            if (va.bucket_sizes[bi] <= remaining_slot_size)
                 va.bucket_values[bi] = va.first_slot;
-                if (va.bucket_values[bi] && (long long) va.bucket_values[bi] % 0xDD60ll == 0) {
-                    int x = 5;
-                }
-            }
-        }
     }
 
     return memory;
@@ -87,7 +85,7 @@ void virtalloc_destroy_virtual_allocator(vap_t allocator) {
 
 void *virtalloc_realloc(vap_t allocator, void *p, const size_t size) {
     VirtualAllocator *alloc = allocator;
-    return alloc->realloc(alloc, p, size);
+    return alloc->realloc(alloc, p, size, BACKWARDS_EXPLORATION_LIMIT);
 }
 
 void virtalloc_free(vap_t allocator, void *p) {

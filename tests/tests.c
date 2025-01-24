@@ -3,6 +3,8 @@
 #include "virtalloc.h"
 #include "virtalloc/memory_slot_meta.h"
 
+// TODO add benchmarking against libc
+
 #define SMALL_HEAP_FLAGS (VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS | VIRTALLOC_FLAG_VA_FEW_BUCKETS)
 
 #define MAKE_AUTO_INIT_INT_ALLOC(out, size) \
@@ -47,7 +49,7 @@ int monolithic_test_1() {
     MAKE_AUTO_INIT_INT_ALLOC(y, 64);
 
     // check if x gets clipped up to minimum allocation size
-    if ((void *) y - (void *) x - sizeof(MemorySlotMeta) != 16)
+    if ((void *) y - (void *) x - sizeof(MemorySlotMeta) != 64)
         goto fail;
 
     MAKE_AUTO_INIT_INT_ALLOC(z, 32);

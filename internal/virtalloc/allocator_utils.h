@@ -19,10 +19,12 @@ void unbind_from_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
 
 void insert_into_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *meta);
 
-void refresh_checksum_of(MemorySlotMeta *meta);
+void refresh_checksum_of(VirtualAllocator *allocator, MemorySlotMeta *meta);
 
 void consume_next_slot(VirtualAllocator *allocator, MemorySlotMeta *meta, size_t moved_bytes);
 
 void consume_prev_slot(VirtualAllocator *allocator, MemorySlotMeta *meta, size_t moved_bytes);
+
+size_t align_to(size_t size, size_t align);
 
 #endif

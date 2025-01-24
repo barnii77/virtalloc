@@ -2,19 +2,20 @@
 #include <assert.h>
 #include <memory.h>
 #include <stddef.h>
-
 #include "virtalloc/allocator_utils.h"
 #include "virtalloc/checksum.h"
 #include "virtalloc/virtual_allocator.h"
 #include "virtalloc/memory_slot_meta.h"
 #include "virtalloc/alloc_settings.h"
 
+// TODO if a specific bucket size pattern can be assumed (eg a specific growth factor per bucket), then you may actually
+// be able to do better than linear search through the buckets (e.g. instead of linear search, binary search more or
+// less by repeated squaring exponentiation that then tells you how much to advance exponentially).
 size_t get_bucket_index(const VirtualAllocator *allocator, const size_t size) {
     for (size_t i = 0; i < allocator->num_buckets; i++) {
-        if (allocator->bucket_sizes[i] > size) {
-            assert(i && "unreachable");
-            return i - 1;
-        }
+        if (allocator->bucket_sizes[i] <= size)
+            continue;
+        return i - 1;
     }
     return allocator->num_buckets - 1;
 }
@@ -27,8 +28,7 @@ MemorySlotMeta *get_meta(const VirtualAllocator *allocator, void *p, const int s
         && "checksum incorrect: you likely passed a pointer to free/realloc that does not correspond to an allocation");
     if (!allocator->enable_safety_checks)
         return meta;
-    if (should_be_free != NO_EXPECTATION && !!meta->is_free != should_be_free)
-        assert(0 && "unexpected allocation status");
+    assert(!(should_be_free != NO_EXPECTATION && !!meta->is_free != should_be_free) && "unexpected allocation status");
     return meta;
 }
 
@@ -51,7 +51,7 @@ void coalesce_slot_with_next(VirtualAllocator *allocator, MemorySlotMeta *meta, 
     if (out_requires_bind)
         insert_into_sorted_free_list(allocator, meta);
 
-    refresh_checksum_of(meta);
+    refresh_checksum_of(allocator, meta);
 }
 
 void coalesce_memory_slots(VirtualAllocator *allocator, MemorySlotMeta *meta, const int meta_requires_unbind) {
@@ -94,9 +94,6 @@ void unbind_from_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
             // meta is the biggest free slot -> the new biggest will be next_smaller_free (next_bigger_free is smallest)
             replacement = get_meta(allocator, meta->next_smaller_free, EXPECT_IS_FREE);
         allocator->bucket_values[bucket_idx] = replacement ? replacement->data : NULL;
-        if (allocator->bucket_values[bucket_idx] && (unsigned long long) allocator->bucket_values[bucket_idx] % 0xDD60ll == 0) {
-            int x = 5;
-        }
         if (!bucket_idx--)
             break;
     }
@@ -109,10 +106,10 @@ void unbind_from_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
     meta_nbf->next_smaller_free = meta->next_smaller_free;
     // have to interleave the refresh calls with the get_meta in case next_bigger_free and next_smaller_free point to
     // the same thing, in which case the first write invalidates the checksum of the second write
-    refresh_checksum_of(meta_nbf);
+    refresh_checksum_of(allocator, meta_nbf);
     MemorySlotMeta *meta_nsf = get_meta(allocator, meta->next_smaller_free, EXPECT_IS_FREE);
     meta_nsf->next_bigger_free = meta->next_bigger_free;
-    refresh_checksum_of(meta_nsf);
+    refresh_checksum_of(allocator, meta_nsf);
 }
 
 void insert_into_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *meta) {
@@ -149,15 +146,10 @@ void insert_into_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
             // no entry in even a single bucket, will just write myself into them
             meta->next_bigger_free = meta->data;
             meta->next_smaller_free = meta->data;
-            refresh_checksum_of(meta);
-            for (size_t bi = 0; bi < allocator->num_buckets; bi++) {
-                if (allocator->bucket_sizes[bi] <= meta->size) {
+            refresh_checksum_of(allocator, meta);
+            for (size_t bi = 0; bi < allocator->num_buckets; bi++)
+                if (allocator->bucket_sizes[bi] <= meta->size)
                     allocator->bucket_values[bi] = meta->data;
-                    if (allocator->bucket_values[bi] && (long long) allocator->bucket_values[bi] % 0xDD60ll == 0) {
-                        int x = 5;
-                    }
-                }
-            }
             return;
         }
     } else {
@@ -180,9 +172,9 @@ void insert_into_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
     next_meta->next_smaller_free = meta->data;
     prev_meta->next_bigger_free = meta->data;
 
-    refresh_checksum_of(prev_meta);
-    refresh_checksum_of(meta);
-    refresh_checksum_of(next_meta);
+    refresh_checksum_of(allocator, prev_meta);
+    refresh_checksum_of(allocator, meta);
+    refresh_checksum_of(allocator, next_meta);
 
     // fill any buckets this size matches that point to NULL
     if (!first_in_bucket) {
@@ -190,10 +182,7 @@ void insert_into_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
         for (size_t bi = 0; bi < allocator->num_buckets; bi++) {
             if (allocator->bucket_sizes[bi] <= meta->size && !allocator->bucket_values[bi]) {
                 allocator->bucket_values[bi] = meta->data;
-            if (allocator->bucket_values[bucket_idx] && (long long) allocator->bucket_values[bucket_idx] % 0xDD60ll == 0) {
-                int x = 5;
-            }
-            no_nulls = 0;
+                no_nulls = 0;
             } else {
                 assert(no_nulls && "unreachable");
             }
@@ -202,9 +191,6 @@ void insert_into_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
     // must check buckets with size smaller than meta->size if those refer to meta->next_bigger_free
     while (!first_in_bucket || first_in_bucket == next_meta) {
         allocator->bucket_values[bucket_idx] = meta->data;
-        if (allocator->bucket_values[bucket_idx] && (long long) allocator->bucket_values[bucket_idx] % 0xDD60ll == 0) {
-            int x = 5;
-        }
         if (!bucket_idx--)
             break;
         void *ent = allocator->bucket_values[bucket_idx];
@@ -212,10 +198,10 @@ void insert_into_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
     }
 }
 
-// TODO take allocator parameter here and refresh checksum only if checksums are enabled
-void refresh_checksum_of(MemorySlotMeta *meta) {
-    meta->checksum = get_checksum(sizeof(*meta) - offsetof(MemorySlotMeta, checksum) - sizeof(meta->checksum),
-                                  (void *) meta + offsetof(MemorySlotMeta, checksum) + sizeof(meta->checksum));
+void refresh_checksum_of(VirtualAllocator *allocator, MemorySlotMeta *meta) {
+    if (allocator->has_checksum)
+        meta->checksum = get_checksum(sizeof(*meta) - offsetof(MemorySlotMeta, checksum) - sizeof(meta->checksum),
+                                      (void *) meta + offsetof(MemorySlotMeta, checksum) + sizeof(meta->checksum));
 }
 
 /// grow an allocated slot into a free slot to the right
@@ -241,8 +227,8 @@ void consume_next_slot(VirtualAllocator *allocator, MemorySlotMeta *meta, size_t
         // adjust size
         meta->size += moved_bytes;
 
-        refresh_checksum_of(meta);
-        refresh_checksum_of(next_next_meta);
+        refresh_checksum_of(allocator, meta);
+        refresh_checksum_of(allocator, next_next_meta);
     } else {
         // reduce next slot size, increase own size
         unbind_from_sorted_free_list(allocator, next_meta);
@@ -253,14 +239,14 @@ void consume_next_slot(VirtualAllocator *allocator, MemorySlotMeta *meta, size_t
         // adjust sizes
         next_meta->size -= moved_bytes;
         next_meta->data += moved_bytes;
-        refresh_checksum_of(next_meta);
+        refresh_checksum_of(allocator, next_meta);
 
         meta->next += moved_bytes;
-        refresh_checksum_of(meta);
+        refresh_checksum_of(allocator, meta);
 
         MemorySlotMeta *next_next_meta = get_meta(allocator, next_meta->next, NO_EXPECTATION);
         next_next_meta->prev += moved_bytes;
-        refresh_checksum_of(next_next_meta);
+        refresh_checksum_of(allocator, next_next_meta);
 
         // insert the free slot to the right back into the sorted free list, just at the now appropriate location
         insert_into_sorted_free_list(allocator, next_meta);
@@ -294,8 +280,8 @@ void consume_prev_slot(VirtualAllocator *allocator, MemorySlotMeta *meta, size_t
         MemorySlotMeta *prev_prev_meta = get_meta(allocator, prev_meta->prev, NO_EXPECTATION);
         prev_prev_meta->next = meta->data;
 
-        refresh_checksum_of(meta);
-        refresh_checksum_of(prev_prev_meta);
+        refresh_checksum_of(allocator, meta);
+        refresh_checksum_of(allocator, prev_prev_meta);
     } else {
         unbind_from_sorted_free_list(allocator, meta);
 
@@ -309,10 +295,14 @@ void consume_prev_slot(VirtualAllocator *allocator, MemorySlotMeta *meta, size_t
         prev_meta->next -= moved_bytes;
 
         // refresh all checksums
-        refresh_checksum_of(prev_meta);
-        refresh_checksum_of(meta);
+        refresh_checksum_of(allocator, prev_meta);
+        refresh_checksum_of(allocator, meta);
 
         // insert the free slot to the right back into the sorted free list, just at the now appropriate location
         insert_into_sorted_free_list(allocator, meta);
     }
+}
+
+size_t align_to(const size_t size, const size_t align) {
+    return (size * align + align - 1) / align;
 }
