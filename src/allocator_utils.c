@@ -90,7 +90,13 @@ void unbind_from_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
         const MemorySlotMeta *replacement = is_only_free_slot
                                                 ? NULL
                                                 : get_meta(allocator, meta->next_bigger_free, EXPECT_IS_FREE);
+        if (replacement && replacement->size < meta->size)
+            // meta is the biggest free slot -> the new biggest will be next_smaller_free (next_bigger_free is smallest)
+            replacement = get_meta(allocator, meta->next_smaller_free, EXPECT_IS_FREE);
         allocator->bucket_values[bucket_idx] = replacement ? replacement->data : NULL;
+        if (allocator->bucket_values[bucket_idx] && (unsigned long long) allocator->bucket_values[bucket_idx] % 0xDD60ll == 0) {
+            int x = 5;
+        }
         if (!bucket_idx--)
             break;
     }
@@ -144,9 +150,14 @@ void insert_into_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
             meta->next_bigger_free = meta->data;
             meta->next_smaller_free = meta->data;
             refresh_checksum_of(meta);
-            for (size_t bi = 0; bi < allocator->num_buckets; bi++)
-                if (allocator->bucket_sizes[bi] <= meta->size)
+            for (size_t bi = 0; bi < allocator->num_buckets; bi++) {
+                if (allocator->bucket_sizes[bi] <= meta->size) {
                     allocator->bucket_values[bi] = meta->data;
+                    if (allocator->bucket_values[bi] && (long long) allocator->bucket_values[bi] % 0xDD60ll == 0) {
+                        int x = 5;
+                    }
+                }
+            }
             return;
         }
     } else {
@@ -179,7 +190,10 @@ void insert_into_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
         for (size_t bi = 0; bi < allocator->num_buckets; bi++) {
             if (allocator->bucket_sizes[bi] <= meta->size && !allocator->bucket_values[bi]) {
                 allocator->bucket_values[bi] = meta->data;
-                no_nulls = 0;
+            if (allocator->bucket_values[bucket_idx] && (long long) allocator->bucket_values[bucket_idx] % 0xDD60ll == 0) {
+                int x = 5;
+            }
+            no_nulls = 0;
             } else {
                 assert(no_nulls && "unreachable");
             }
@@ -188,6 +202,9 @@ void insert_into_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
     // must check buckets with size smaller than meta->size if those refer to meta->next_bigger_free
     while (!first_in_bucket || first_in_bucket == next_meta) {
         allocator->bucket_values[bucket_idx] = meta->data;
+        if (allocator->bucket_values[bucket_idx] && (long long) allocator->bucket_values[bucket_idx] % 0xDD60ll == 0) {
+            int x = 5;
+        }
         if (!bucket_idx--)
             break;
         void *ent = allocator->bucket_values[bucket_idx];
@@ -231,17 +248,18 @@ void consume_next_slot(VirtualAllocator *allocator, MemorySlotMeta *meta, size_t
         unbind_from_sorted_free_list(allocator, next_meta);
 
         // move the metadata of the free slot to the right
-        memmove(next_meta + moved_bytes, next_meta, sizeof(*next_meta));
+        memmove((void *) next_meta + moved_bytes, next_meta, sizeof(*next_meta));
+        next_meta = (MemorySlotMeta *) ((void *) next_meta + moved_bytes);
         // adjust sizes
         next_meta->size -= moved_bytes;
         next_meta->data += moved_bytes;
+        refresh_checksum_of(next_meta);
+
         meta->next += moved_bytes;
+        refresh_checksum_of(meta);
+
         MemorySlotMeta *next_next_meta = get_meta(allocator, next_meta->next, NO_EXPECTATION);
         next_next_meta->prev += moved_bytes;
-
-        // refresh all checksums
-        refresh_checksum_of(next_meta);
-        refresh_checksum_of(meta);
         refresh_checksum_of(next_next_meta);
 
         // insert the free slot to the right back into the sorted free list, just at the now appropriate location
@@ -266,7 +284,8 @@ void consume_prev_slot(VirtualAllocator *allocator, MemorySlotMeta *meta, size_t
         moved_bytes += remaining_size;
 
         // move the metadata of the free slot to the left
-        memmove(meta - moved_bytes, meta, sizeof(*meta));
+        memmove((void *) meta - moved_bytes, meta, sizeof(*meta));
+        meta = (MemorySlotMeta *) ((void *) meta - moved_bytes);
         // adjust size and data ptr
         meta->size += moved_bytes;
         meta->data -= moved_bytes;
@@ -281,7 +300,8 @@ void consume_prev_slot(VirtualAllocator *allocator, MemorySlotMeta *meta, size_t
         unbind_from_sorted_free_list(allocator, meta);
 
         // move the metadata of the free slot to the right
-        memmove(meta - moved_bytes, meta, sizeof(*meta));
+        memmove((void *) meta - moved_bytes, meta, sizeof(*meta));
+        meta = (MemorySlotMeta *) ((void *) meta - moved_bytes);
         // adjust sizes
         meta->size += moved_bytes;
         meta->data -= moved_bytes;

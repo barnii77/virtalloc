@@ -33,7 +33,7 @@ void *virtalloc_malloc_impl(VirtualAllocator *allocator, size_t size, size_t max
             // no slot of that size or bigger is available
             return NULL;
         meta = get_meta(allocator, slot_from_bucket, EXPECT_IS_FREE);
-        assert(size < meta->size && "unreachable");
+        assert(size <= meta->size && "unreachable");
     }
 
     // try to find the smallest free slot to consume that still fits
@@ -81,6 +81,7 @@ void *virtalloc_malloc_impl(VirtualAllocator *allocator, size_t size, size_t max
 
         refresh_checksum_of(meta);
         refresh_checksum_of(next_meta);
+        refresh_checksum_of(new_slot_meta_ptr);
 
         insert_into_sorted_free_list(allocator, new_slot_meta_ptr);
 

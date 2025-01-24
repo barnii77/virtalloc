@@ -29,6 +29,11 @@
         if (mem[i] != size * 1.5 + i) \
             goto fail;
 
+#define ASSERT_DOUBLE_CONTENT_STARTING_AT(mem, size, start) \
+    for (int i = 0; i < size; i++) \
+        if (mem[i] != start * 1.5 + i) \
+            goto fail;
+
 #define TEST_ASSERT_MSG(expr, msg) \
     if (!(expr)) { \
         printf("ASSERTION FAILED: %s\n", msg); \
@@ -100,7 +105,7 @@ int monolithic_test_2() {
     // Allocate memory to see if the allocator can handle fragmented gaps
     MAKE_AUTO_INIT_DOUBLE_ALLOC(e, 8);
 
-    TEST_ASSERT_MSG(e != c, "e should not reuse c's memory slot without fragmentation handling");
+    TEST_ASSERT_MSG(e == c, "e should reuse c's memory slot");
 
     // Check realloc growth that fits in existing slots
     double *d_realloc = virtalloc_realloc(alloc, d, 32 * sizeof(double));
@@ -109,7 +114,7 @@ int monolithic_test_2() {
     // Check realloc shrink
     double *b_shrink = virtalloc_realloc(alloc, b_realloc, 64 * sizeof(double));
     TEST_ASSERT_MSG(b_shrink != NULL, "b shrink failed");
-    ASSERT_DOUBLE_CONTENT(b_shrink, 64);
+    ASSERT_DOUBLE_CONTENT_STARTING_AT(b_shrink, 64, 128);
 
     // Test allocator's ability to handle edge-case large allocations
     double *f = virtalloc_malloc(alloc, 512 * sizeof(double));
@@ -117,7 +122,7 @@ int monolithic_test_2() {
 
     // Assert contents for valid allocations
     ASSERT_DOUBLE_CONTENT(a, 4);
-    ASSERT_DOUBLE_CONTENT(b_shrink, 64);
+    ASSERT_DOUBLE_CONTENT_STARTING_AT(b_shrink, 64, 128);
     ASSERT_DOUBLE_CONTENT(d_realloc, 16); // Only first 16 should remain valid
 
 success:
@@ -131,9 +136,9 @@ fail:
 BEGIN_RUNNER_SETTINGS()
     print_on_pass = 1;
     print_pre_run_msg = 0;
-    run_all_tests = 0;
+    run_all_tests = 1;
     n_test_reps = 1;
-    selected_test = "monolithic_test_2";
+    selected_test = "";
 END_RUNNER_SETTINGS()
 
 BEGIN_TEST_LIST()

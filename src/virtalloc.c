@@ -46,16 +46,20 @@ vap_t new_virtual_allocator_from_impl(const size_t size, char memory[static size
         MemorySlotMeta *first_slot_meta_ptr = va.first_slot - sizeof(MemorySlotMeta);
         const MemorySlotMeta first_slot_meta_content = {
             .meta_type = NORMAL_MEMORY_SLOT_META_TYPE, .checksum = 0, .size = remaining_slot_size,
-            .data = va.first_slot,
-            .next = va.first_slot, .prev = va.first_slot, .next_bigger_free = va.first_slot,
+            .data = va.first_slot, .next = va.first_slot, .prev = va.first_slot, .next_bigger_free = va.first_slot,
             .next_smaller_free = va.first_slot, .is_free = 1
         };
         *first_slot_meta_ptr = first_slot_meta_content;
         refresh_checksum_of(first_slot_meta_ptr);
 
-        for (size_t bi = 0; bi < va.num_buckets; bi++)
-            if (va.bucket_sizes[bi] <= remaining_slot_size)
+        for (size_t bi = 0; bi < va.num_buckets; bi++) {
+            if (va.bucket_sizes[bi] <= remaining_slot_size) {
                 va.bucket_values[bi] = va.first_slot;
+                if (va.bucket_values[bi] && (long long) va.bucket_values[bi] % 0xDD60ll == 0) {
+                    int x = 5;
+                }
+            }
+        }
     }
 
     return memory;
