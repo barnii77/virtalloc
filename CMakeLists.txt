@@ -19,6 +19,7 @@ set(LIBRARY_SOURCES
         internal/virtalloc/allocator.h
         internal/virtalloc/allocator_utils.h
         internal/virtalloc/cross_platform_lock.h
+        internal/virtalloc/math_utils.h
         include/virtalloc.h
 )
 

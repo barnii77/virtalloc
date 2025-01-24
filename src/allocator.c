@@ -8,6 +8,7 @@
 #include "virtalloc/allocator.h"
 #include "virtalloc/allocator_utils.h"
 #include "virtalloc/alloc_settings.h"
+#include "virtalloc/math_utils.h"
 
 void *virtalloc_malloc_impl(VirtualAllocator *allocator, size_t size, size_t max_backward_exploration_steps) {
     allocator->pre_alloc_op_callback(allocator);
@@ -66,9 +67,9 @@ void *virtalloc_malloc_impl(VirtualAllocator *allocator, size_t size, size_t max
 
         void *new_slot_data = meta->data + size + sizeof(MemorySlotMeta);
         const MemorySlotMeta new_slot_meta_content = {
-            .meta_type = NORMAL_MEMORY_SLOT_META_TYPE, .checksum = 0, .size = remaining_bytes - sizeof(MemorySlotMeta),
+            .sizeof_meta = sizeof(MemorySlotMeta), .checksum = 0, .size = remaining_bytes - sizeof(MemorySlotMeta),
             .data = new_slot_data, .next = meta->next, .prev = meta->data, .next_bigger_free = NULL,
-            .next_smaller_free = NULL, .is_free = 1
+            .next_smaller_free = NULL, .is_free = 1, .meta_type = NORMAL_MEMORY_SLOT_META_TYPE
         };
         MemorySlotMeta *new_slot_meta_ptr = new_slot_data - sizeof(MemorySlotMeta);
         *new_slot_meta_ptr = new_slot_meta_content;
@@ -142,9 +143,9 @@ void *virtalloc_realloc_impl(VirtualAllocator *allocator, void *p, size_t size,
             meta->size = size;
             void *new_slot_data = meta->data + size + sizeof(MemorySlotMeta);
             const MemorySlotMeta new_slot_meta_content = {
-                .meta_type = NORMAL_MEMORY_SLOT_META_TYPE, .checksum = 0, .size = shaved_off - sizeof(MemorySlotMeta),
+                .sizeof_meta = sizeof(MemorySlotMeta), .checksum = 0, .size = shaved_off - sizeof(MemorySlotMeta),
                 .data = new_slot_data, .next = meta->next, .prev = meta->data, .next_bigger_free = NULL,
-                .next_smaller_free = NULL, .is_free = 1
+                .next_smaller_free = NULL, .is_free = 1, .meta_type = NORMAL_MEMORY_SLOT_META_TYPE
             };
             MemorySlotMeta *new_slot_meta_ptr = new_slot_data - sizeof(MemorySlotMeta);
             *new_slot_meta_ptr = new_slot_meta_content;

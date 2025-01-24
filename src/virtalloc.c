@@ -8,7 +8,7 @@
 #include "virtalloc/alloc_settings.h"
 #include "virtalloc/allocator_utils.h"
 
-vap_t new_virtual_allocator_from_impl(const size_t size, char memory[static size], const int flags,
+vap_t new_virtual_allocator_from_impl(const size_t size, void memory[static size], const int flags,
                                       const int memory_is_owned) {
     const size_t num_buckets = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS ? NUM_BUCKETS_FEW_BUCKET_MODE : NUM_BUCKETS;
     const double bucket_growth_factor = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS
@@ -19,8 +19,8 @@ vap_t new_virtual_allocator_from_impl(const size_t size, char memory[static size
     ThreadLock tl;
     init_lock(&tl);
     VirtualAllocator va = {
-        .lock = tl, .memory_size = size, .memory = memory, .first_slot = NULL, .num_buckets = num_buckets,
-        .bucket_sizes = NULL, .bucket_values = NULL, .malloc = virtalloc_malloc_impl, .realloc = virtalloc_realloc_impl,
+        .lock = tl, .self = memory, .first_slot = NULL, .num_buckets = num_buckets, .bucket_sizes = NULL,
+        .bucket_values = NULL, .malloc = virtalloc_malloc_impl, .realloc = virtalloc_realloc_impl,
         .free = virtalloc_free_impl, .pre_alloc_op_callback = virtalloc_pre_op_callback,
         .post_alloc_op_callback = virtalloc_post_op_callback, .intra_thread_lock_count = 0,
         .has_checksum = (flags & VIRTALLOC_FLAG_VA_HAS_CHECKSUM) != 0,
@@ -31,7 +31,7 @@ vap_t new_virtual_allocator_from_impl(const size_t size, char memory[static size
     va.bucket_values = (void **) &memory[sizeof(VirtualAllocator) + va.num_buckets * sizeof(size_t)];
     va.first_slot = memory + sizeof(VirtualAllocator) + va.num_buckets * sizeof(size_t)
                     + va.num_buckets * sizeof(void *) + sizeof(MemorySlotMeta);
-    const size_t remaining_slot_size = (void *) memory + size - va.first_slot;
+    const size_t remaining_slot_size = memory + size - va.first_slot;
     if (remaining_slot_size < MIN_ALLOCATION_SIZE)
         va.first_slot = NULL;
     *(VirtualAllocator *) memory = va;
@@ -48,9 +48,9 @@ vap_t new_virtual_allocator_from_impl(const size_t size, char memory[static size
     if (va.first_slot) {
         MemorySlotMeta *first_slot_meta_ptr = va.first_slot - sizeof(MemorySlotMeta);
         const MemorySlotMeta first_slot_meta_content = {
-            .meta_type = NORMAL_MEMORY_SLOT_META_TYPE, .checksum = 0, .size = remaining_slot_size,
-            .data = va.first_slot, .next = va.first_slot, .prev = va.first_slot, .next_bigger_free = va.first_slot,
-            .next_smaller_free = va.first_slot, .is_free = 1
+            .sizeof_meta = sizeof(MemorySlotMeta), .checksum = 0, .size = remaining_slot_size, .data = va.first_slot,
+            .next = va.first_slot, .prev = va.first_slot, .next_bigger_free = va.first_slot,
+            .next_smaller_free = va.first_slot, .is_free = 1, .meta_type = NORMAL_MEMORY_SLOT_META_TYPE
         };
         *first_slot_meta_ptr = first_slot_meta_content;
         refresh_checksum_of(&va, first_slot_meta_ptr);

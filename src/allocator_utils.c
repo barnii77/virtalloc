@@ -302,7 +302,3 @@ void consume_prev_slot(VirtualAllocator *allocator, MemorySlotMeta *meta, size_t
         insert_into_sorted_free_list(allocator, meta);
     }
 }
-
-size_t align_to(const size_t size, const size_t align) {
-    return (size * align + align - 1) / align;
-}

@@ -10,20 +10,15 @@
 // TODO if a specific bucket size pattern can be assumed (eg a specific growth factor per bucket), then you may actually
 // be able to do better than linear search through the buckets (e.g. instead of linear search, binary search more or
 // less by repeated squaring exponentiation that then tells you how much to advance exponentially).
-// TODO find a good minimum allocation size (eg 16 bytes of usable space)
-// TODO add an alignment mechanism for size categories. Eg 16-64 bytes -> align 16 byte, >= 64 byte -> align 64 byte
 // TODO small alloc optimization: the metadata struct is way too big (64 bytes) for small allocations, so I have to
 // make it way smaller, more like 8 bytes
 
 /// the internal per-allocator data stored in the first sizeof(VA) bytes of the heap
 typedef struct VirtualAllocator {
-    /// lock for multi-threaded allocators
+    /// lock for multithreaded allocators
     ThreadLock lock;
-    /// size of the underlying memory region including the bytes taken up by this struct right here.
-    size_t memory_size;
-    /// array of [length] bytes. In the first sizeof(VirtualAllocator) bytes of memory, this struct itself is stored,
-    /// meaning this type is self-referential.
-    char *memory;
+    /// a pointer to where the struct itself is stored
+    struct VirtualAllocator *self;
     /// a linked list connecting one slot to the previous and next one
     void *first_slot;
     /// number of buckets in bucket_sizes/bucket_pointers
@@ -60,6 +55,8 @@ typedef struct VirtualAllocator {
     unsigned memory_is_owned: 1;
     /// may be set if the user guarantees thread safe usage of the allocator to remove the global allocator lock
     unsigned assume_thread_safe_usage: 1;
+    typedef struct {int a;} InnerStruct;
+    char __pad[align_to(sizeof(InnerStruct), ALLOCATION_ALIGN) - sizeof(InnerStruct)];
 } VirtualAllocator __attribute__((aligned(ALLOCATION_ALIGN)));
 
 void lock_virtual_allocator(VirtualAllocator *allocator);

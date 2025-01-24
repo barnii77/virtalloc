@@ -12,8 +12,8 @@
 
 /// the metadata in front of a heap slot
 typedef struct MemorySlotMeta {
-    /// tells the allocator what type of metadata this is
-    int meta_type;
+    /// the size of this metadata struct. This field is a polymorphism feature.
+    int sizeof_meta;
     /// a checksum that can help detect double free's
     int checksum;
     /// size of this slot's data section
@@ -30,6 +30,9 @@ typedef struct MemorySlotMeta {
     void *next_smaller_free;
     /// whether it is a free slot or allocated
     unsigned is_free: 1;
-} MemorySlotMeta __attribute__((aligned(ALLOCATION_ALIGN)));
+    /// tells the allocator what type of metadata this is. Note that this has to be the last thing in the slot and has
+    /// to be an int because there will be a polymorphism mechanism for slot metadata.
+    int meta_type;
+} __attribute__((aligned(ALLOCATION_ALIGN))) MemorySlotMeta;
 
 #endif
