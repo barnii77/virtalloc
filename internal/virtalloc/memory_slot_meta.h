@@ -30,6 +30,10 @@ typedef struct MemorySlotMeta {
     void *next_smaller_free;
     /// whether it is a free slot or allocated
     unsigned is_free: 1;
+    /// whether to call the allocator->release_memory callback on this slot on allocator destruction or not
+    unsigned memory_is_owned: 1;
+    /// how many bytes the data pointer has been right adjusted to match the alignment requirements
+    unsigned char memory_pointer_right_adjustment;
     /// tells the allocator what type of metadata this is. Note that this has to be the last thing in the slot and has
     /// to be an int because there will be a polymorphism mechanism for slot metadata.
     int meta_type;

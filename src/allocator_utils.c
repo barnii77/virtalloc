@@ -12,20 +12,21 @@
 // be able to do better than linear search through the buckets (e.g. instead of linear search, binary search more or
 // less by repeated squaring exponentiation that then tells you how much to advance exponentially).
 size_t get_bucket_index(const VirtualAllocator *allocator, const size_t size) {
-    for (size_t i = 0; i < allocator->num_buckets; i++) {
-        if (allocator->bucket_sizes[i] <= size)
-            continue;
-        return i - 1;
-    }
+    assert(size >= MIN_ALLOCATION_SIZE && "allocation smaller than smallest allowed allocation size");
+    for (size_t i = 0; i < allocator->num_buckets; i++)
+        if (allocator->bucket_sizes[i] > size)
+            return i - 1;
     return allocator->num_buckets - 1;
 }
 
 MemorySlotMeta *get_meta(const VirtualAllocator *allocator, void *p, const int should_be_free) {
     MemorySlotMeta *meta = p - sizeof(MemorySlotMeta);
     assert(
-        !(allocator->has_checksum && get_checksum(sizeof(*meta) - offsetof(MemorySlotMeta, checksum) - sizeof(meta->
-            checksum), (void *) meta + offsetof(MemorySlotMeta, checksum) + sizeof(meta->checksum)) != meta->checksum)
-        && "checksum incorrect: you likely passed a pointer to free/realloc that does not correspond to an allocation");
+            !(allocator->has_checksum && get_checksum(sizeof(*meta) - offsetof(MemorySlotMeta, checksum) - sizeof(meta->
+                    checksum), (void *) meta + offsetof(MemorySlotMeta, checksum) + sizeof(meta->checksum)) !=
+                                         meta->checksum)
+            &&
+            "checksum incorrect: you likely passed a pointer to free/realloc that does not correspond to an allocation");
     if (!allocator->enable_safety_checks)
         return meta;
     assert(!(should_be_free != NO_EXPECTATION && !!meta->is_free != should_be_free) && "unexpected allocation status");
@@ -54,26 +55,29 @@ void coalesce_slot_with_next(VirtualAllocator *allocator, MemorySlotMeta *meta, 
     refresh_checksum_of(allocator, meta);
 }
 
-void coalesce_memory_slots(VirtualAllocator *allocator, MemorySlotMeta *meta, const int meta_requires_unbind) {
+void coalesce_memory_slots(VirtualAllocator *allocator, MemorySlotMeta *meta,
+                           const int meta_requires_unbind_from_free_list) {
     assert(meta->is_free && "illegal usage: can only coalesce a slot with it's neighbours if the slot is free");
     MemorySlotMeta *next_meta = get_meta(allocator, meta->next, NO_EXPECTATION);
     MemorySlotMeta *prev_meta = get_meta(allocator, meta->prev, NO_EXPECTATION);
 
     // can only coalesce with next slot if it is free and forms a contiguous chunk with current slot in memory
     const int coalesce_with_next = next_meta->is_free && next_meta->data - sizeof(*next_meta) == meta->data + meta->
-                                   size;
+            size;
     // can only coalesce with previous slot if it is free and forms a contiguous chunk with current slot in memory
     const int coalesce_with_prev = prev_meta->is_free && meta->data - sizeof(*meta) == prev_meta->data + prev_meta->
-                                   size;
+            size;
 
     if (coalesce_with_next)
-        coalesce_slot_with_next(allocator, meta, next_meta, meta_requires_unbind, 1, !coalesce_with_prev);
+        coalesce_slot_with_next(allocator, meta, next_meta, meta_requires_unbind_from_free_list, 1,
+                                !coalesce_with_prev);
     if (coalesce_with_prev)
-        coalesce_slot_with_next(allocator, prev_meta, meta, 1, meta_requires_unbind && !coalesce_with_next, 1);
+        coalesce_slot_with_next(allocator, prev_meta, meta, 1,
+                                meta_requires_unbind_from_free_list && !coalesce_with_next, 1);
 
     // if neither of the above branches is reached and the meta passed in is not bound to the sorted free list in the
     // first place, we still need to place it there
-    if (!coalesce_with_next && !coalesce_with_prev && !meta_requires_unbind)
+    if (!coalesce_with_next && !coalesce_with_prev && !meta_requires_unbind_from_free_list)
         insert_into_sorted_free_list(allocator, meta);
 }
 
@@ -88,8 +92,8 @@ void unbind_from_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
     while (allocator->bucket_values[bucket_idx] == meta->data) {
         // must replace with next bigger slot
         const MemorySlotMeta *replacement = is_only_free_slot
-                                                ? NULL
-                                                : get_meta(allocator, meta->next_bigger_free, EXPECT_IS_FREE);
+                                            ? NULL
+                                            : get_meta(allocator, meta->next_bigger_free, EXPECT_IS_FREE);
         if (replacement && replacement->size < meta->size)
             // meta is the biggest free slot -> the new biggest will be next_smaller_free (next_bigger_free is smallest)
             replacement = get_meta(allocator, meta->next_smaller_free, EXPECT_IS_FREE);
@@ -116,48 +120,29 @@ void insert_into_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
     assert(meta->is_free && "illegal usage");
     size_t bucket_idx = get_bucket_index(allocator, meta->size);
     void *bucket_value = allocator->bucket_values[bucket_idx];
+
+    meta->next_bigger_free = meta->data;
+    meta->next_smaller_free = meta->data;
+    refresh_checksum_of(allocator, meta);
+
     MemorySlotMeta *next_meta = NULL;
     MemorySlotMeta *prev_meta = NULL;
     MemorySlotMeta *first_in_bucket = bucket_value ? get_meta(allocator, bucket_value, EXPECT_IS_FREE) : NULL;
+    void *smallest_entry = allocator->bucket_values[0];
     if (!bucket_value) {
         // next bigger one links to the smallest entry to make the sorted linked list circular
-        void *smallest_entry = allocator->bucket_values[0];
         if (smallest_entry)
             next_meta = get_meta(allocator, smallest_entry, EXPECT_IS_FREE);
         else
             next_meta = meta;
-        // find the next smaller one
-        ssize_t non_empty_bucket_idx = -1;
-        const size_t starting_bucket_index = bucket_idx--;
-        while (bucket_idx != starting_bucket_index) {
-            void *entry = allocator->bucket_values[bucket_idx];
-            if (entry) {
-                MemorySlotMeta *ent_meta = get_meta(allocator, entry, EXPECT_IS_FREE);
-                while (ent_meta->next_bigger_free != meta->next_bigger_free)
-                    ent_meta = get_meta(allocator, ent_meta->next_bigger_free, EXPECT_IS_FREE);
-                prev_meta = get_meta(allocator, ent_meta->data, EXPECT_IS_FREE);
-                non_empty_bucket_idx = bucket_idx;
-                break;
-            }
-            bucket_idx = (bucket_idx - 1) % allocator->num_buckets;
-        }
-        bucket_idx = starting_bucket_index;
-        if (non_empty_bucket_idx < 0) {
-            // no entry in even a single bucket, will just write myself into them
-            meta->next_bigger_free = meta->data;
-            meta->next_smaller_free = meta->data;
-            refresh_checksum_of(allocator, meta);
-            for (size_t bi = 0; bi < allocator->num_buckets; bi++)
-                if (allocator->bucket_sizes[bi] <= meta->size)
-                    allocator->bucket_values[bi] = meta->data;
-            return;
-        }
+        // the next smaller one is just the next_smaller_free of smallest entry
+        prev_meta = get_meta(allocator, next_meta->next_smaller_free, EXPECT_IS_FREE);
     } else {
         next_meta = first_in_bucket;
         // find the smallest heap alloc that is bigger
-        while (next_meta->size < meta->size) {
+        while (next_meta->size < meta->size && next_meta->data != smallest_entry) {
             MemorySlotMeta *next_bigger = get_meta(allocator, next_meta->next_bigger_free, EXPECT_IS_FREE);
-            if (next_bigger->size <= next_meta->size)
+            if (next_bigger->size < next_meta->size)
                 break;
             next_meta = next_bigger;
         }
@@ -184,7 +169,7 @@ void insert_into_sorted_free_list(VirtualAllocator *allocator, MemorySlotMeta *m
                 allocator->bucket_values[bi] = meta->data;
                 no_nulls = 0;
             } else {
-                assert(no_nulls && "unreachable");
+                assert((allocator->bucket_sizes[bi] > meta->size || no_nulls) && "unreachable");
             }
         }
     }
@@ -211,8 +196,8 @@ void consume_next_slot(VirtualAllocator *allocator, MemorySlotMeta *meta, size_t
     const ssize_t remaining_size = (ssize_t) (next_meta->size + sizeof(MemorySlotMeta)) - (ssize_t) moved_bytes;
     assert(remaining_size >= 0 && "cannot join: block to join with too small");
     assert(
-        next_meta->data - sizeof(*next_meta) == meta->data + meta->size &&
-        "cannot coalesce with slot that is not a contiguous neighbour");
+            next_meta->data - sizeof(*next_meta) == meta->data + meta->size &&
+            "cannot coalesce with slot that is not a contiguous neighbour");
 
     if (remaining_size < sizeof(MemorySlotMeta) + MIN_ALLOCATION_SIZE) {
         // next slot would become too small, must be consumed completely
@@ -260,8 +245,8 @@ void consume_prev_slot(VirtualAllocator *allocator, MemorySlotMeta *meta, size_t
     const ssize_t remaining_size = (ssize_t) (prev_meta->size + sizeof(MemorySlotMeta)) - (ssize_t) moved_bytes;
     assert(remaining_size >= 0 && "cannot join: block to join with too small");
     assert(
-        meta->data - sizeof(*meta) == prev_meta->data + prev_meta->size &&
-        "cannot coalesce with slot that is not a contiguous neighbour");
+            meta->data - sizeof(*meta) == prev_meta->data + prev_meta->size &&
+            "cannot coalesce with slot that is not a contiguous neighbour");
 
     if (remaining_size < sizeof(MemorySlotMeta) + MIN_ALLOCATION_SIZE) {
         unbind_from_sorted_free_list(allocator, meta);

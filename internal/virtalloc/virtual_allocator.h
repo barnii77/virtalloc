@@ -29,13 +29,19 @@ typedef struct VirtualAllocator {
     void **bucket_values;
 
     /// allocation function
-    void *(*malloc)(struct VirtualAllocator *allocator, size_t size, size_t max_backward_exploration_steps);
-
-    /// reallocation function
-    void *(*realloc)(struct VirtualAllocator *allocator, void *p, size_t size, size_t max_backward_exploration_steps);
+    void *(*malloc)(struct VirtualAllocator *allocator, size_t size);
 
     /// free function
     void (*free)(struct VirtualAllocator *allocator, void *p);
+
+    /// reallocation function
+    void *(*realloc)(struct VirtualAllocator *allocator, void *p, size_t size);
+
+    /// the function used to give the allocator new memory it can use (assumed to be free initially)
+    void (*add_new_memory)(struct VirtualAllocator *allocator, void *p, size_t size);
+
+    /// callback used when the VA is released: it is called on each owned memory slot (may be `free` for example)
+    void (*release_memory)(void *p);
 
     /// a callback invoked *before* an allocator operation (one of the callbacks defined below)
     void (*pre_alloc_op_callback)(struct VirtualAllocator *allocator);
@@ -47,17 +53,20 @@ typedef struct VirtualAllocator {
     /// Note that this counter is only used within a thread to keep track of the lock/unlock counts and is thread safe
     /// despite not being atomic because it is only modified in code passages where the allocator is locked already.
     int intra_thread_lock_count;
+    /// how many bytes the data pointer has been right adjusted to match the alignment requirements
+    unsigned char memory_pointer_right_adjustment;
     /// whether the allocator should compute the checksum for the metadata
     unsigned has_checksum: 1;
     /// whether to enable some basic safety checks or not
     unsigned enable_safety_checks: 1;
     /// set only if the VA's underlying memory is owned (used in free_virtual_allocator for user foot gun protection)
     unsigned memory_is_owned: 1;
+    /// if set, when destroying a VA, the release will not traverse the entire heap and instead only call
+    /// allocator->release_memory on the allocator itself
+    unsigned release_only_allocator: 1;
     /// may be set if the user guarantees thread safe usage of the allocator to remove the global allocator lock
     unsigned assume_thread_safe_usage: 1;
-    typedef struct {int a;} InnerStruct;
-    char __pad[align_to(sizeof(InnerStruct), ALLOCATION_ALIGN) - sizeof(InnerStruct)];
-} VirtualAllocator __attribute__((aligned(ALLOCATION_ALIGN)));
+} __attribute__((aligned(ALLOCATION_ALIGN))) VirtualAllocator;
 
 void lock_virtual_allocator(VirtualAllocator *allocator);
 
