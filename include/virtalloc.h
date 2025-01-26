@@ -1,5 +1,7 @@
-#ifndef TINY_ALLOC_LIBRARY_H
-#define TINY_ALLOC_LIBRARY_H
+#ifndef VIRTALLOC_H
+#define VIRTALLOC_H
+
+typedef struct _IO_FILE FILE;
 
 typedef void *vap_t;
 
@@ -24,9 +26,15 @@ void virtalloc_set_release_mechanism(vap_t allocator, void (*release_memory)(voi
 
 void virtalloc_unset_release_mechanism(vap_t allocator);
 
+void virtalloc_set_request_mechanism(vap_t allocator, void *(*request_new_memory)(size_t size));
+
+void virtalloc_unset_request_mechanism(vap_t allocator);
+
+void virtalloc_dump_allocator_to_file(FILE *file, vap_t allocator);
+
 #define VIRTALLOC_FLAG_VA_HAS_CHECKSUM 0x1
 #define VIRTALLOC_FLAG_VA_HAS_NON_CHECKSUM_SAFETY_CHECKS 0x2
-#define VIRTALLOC_FLAG_VA_HAS_SAFETY_CHECKS 0x3
+#define VIRTALLOC_FLAG_VA_HAS_SAFETY_CHECKS (VIRTALLOC_FLAG_VA_HAS_CHECKSUM | VIRTALLOC_FLAG_VA_HAS_NON_CHECKSUM_SAFETY_CHECKS)
 #define VIRTALLOC_FLAG_VA_FEW_BUCKETS 0x4
 #define VIRTALLOC_FLAG_VA_MANY_BUCKETS 0x0  // not a real setting, just uses default num buckets
 #define VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS VIRTALLOC_FLAG_VA_HAS_SAFETY_CHECKS

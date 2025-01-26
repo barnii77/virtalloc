@@ -29,7 +29,7 @@ typedef struct VirtualAllocator {
     void **bucket_values;
 
     /// allocation function
-    void *(*malloc)(struct VirtualAllocator *allocator, size_t size);
+    void *(*malloc)(struct VirtualAllocator *allocator, size_t size, int is_retry_run);
 
     /// free function
     void (*free)(struct VirtualAllocator *allocator, void *p);
@@ -43,11 +43,18 @@ typedef struct VirtualAllocator {
     /// callback used when the VA is released: it is called on each owned memory slot (may be `free` for example)
     void (*release_memory)(void *p);
 
+    /// called when the allocator OOMs to request more memory. May return NULL. If it returns a non-null pointer, the
+    /// first 8 bytes at that address must be set to the size of the memory granted to the allocator. This will always
+    /// be legal as it is guaranteed that the minimum size that will ever be requested is 8. Those 8 bytes are only a
+    /// temporary size storage for simple information transfer to the allocator and the allocator may wipe that
+    /// information at any point.
+    void *(*request_new_memory)(size_t min_size);
+
     /// a callback invoked *before* an allocator operation (one of the callbacks defined below)
-    void (*pre_alloc_op_callback)(struct VirtualAllocator *allocator);
+    void (*pre_alloc_op)(struct VirtualAllocator *allocator);
 
     /// a callback invoked *after* an allocator operation (one of the callbacks defined below)
-    void (*post_alloc_op_callback)(struct VirtualAllocator *allocator);
+    void (*post_alloc_op)(struct VirtualAllocator *allocator);
 
     /// the number of times the allocator has been locked. The global lock will be released when this count reaches 0.
     /// Note that this counter is only used within a thread to keep track of the lock/unlock counts and is thread safe

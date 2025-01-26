@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <memory.h>
 #include <assert.h>
+#include <stdio.h>
 #include "virtalloc.h"
 #include "virtalloc/allocator.h"
 #include "virtalloc/memory_slot_meta.h"
@@ -11,10 +12,10 @@
 
 vap_t new_virtual_allocator_from_impl(size_t size, char memory[static size], const int flags,
                                       const int memory_is_owned) {
-    const size_t num_buckets = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS ? NUM_BUCKETS_FEW_BUCKET_MODE : NUM_BUCKETS;
+    const size_t num_buckets = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS ? NUM_BUCKETS_FEW_BUCKET_MODE : NUM_BUCKETS_DEFAULT;
     const double bucket_growth_factor = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS
                                         ? BUCKET_SIZE_GROWTH_FACTOR_FEW_BUCKET_MODE
-                                        : BUCKET_SIZE_GROWTH_FACTOR;
+                                        : BUCKET_SIZE_GROWTH_FACTOR_DEFAULT;
 
     size_t right_adjustment = ALLOCATION_ALIGN - (size_t) memory % ALLOCATION_ALIGN;
     memory += right_adjustment;
@@ -28,8 +29,8 @@ vap_t new_virtual_allocator_from_impl(size_t size, char memory[static size], con
         .lock = tl, .self = (VirtualAllocator *) memory, .first_slot = NULL, .num_buckets = num_buckets,
         .bucket_sizes = NULL, .bucket_values = NULL, .malloc = virtalloc_malloc_impl, .free = virtalloc_free_impl,
         .realloc = virtalloc_realloc_impl, .add_new_memory = virtalloc_add_new_memory_impl, .release_memory = NULL,
-        .pre_alloc_op_callback = virtalloc_pre_op_callback_impl,
-        .post_alloc_op_callback = virtalloc_post_op_callback_impl, .intra_thread_lock_count = 0,
+        .request_new_memory = NULL, .pre_alloc_op = virtalloc_pre_op_callback_impl,
+        .post_alloc_op = virtalloc_post_op_callback_impl, .intra_thread_lock_count = 0,
         .memory_pointer_right_adjustment = right_adjustment,
         .has_checksum = (flags & VIRTALLOC_FLAG_VA_HAS_CHECKSUM) != 0,
         .enable_safety_checks = (flags & VIRTALLOC_FLAG_VA_HAS_NON_CHECKSUM_SAFETY_CHECKS) != 0,
@@ -76,13 +77,15 @@ vap_t virtalloc_new_virtual_allocator_from(const size_t size, char memory[static
     return new_virtual_allocator_from_impl(size, memory, flags, 0);
 }
 
-vap_t virtalloc_new_virtual_allocator(const size_t size, const int flags) {
-    if (size < sizeof(VirtualAllocator))
-        return NULL;
+vap_t virtalloc_new_virtual_allocator(size_t size, const int flags) {
+    const size_t num_buckets = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS ? NUM_BUCKETS_FEW_BUCKET_MODE : NUM_BUCKETS_DEFAULT;
+    size += sizeof(VirtualAllocator) + num_buckets * sizeof(size_t) + num_buckets * sizeof(void *);
     char *memory = malloc(size + ALLOCATION_ALIGN - 1);
     if (!memory)
         return NULL;
     vap_t alloc = new_virtual_allocator_from_impl(size, memory, flags, 1);
+    if (!alloc)
+        return NULL;
     virtalloc_set_release_mechanism(alloc, free);
     return alloc;
 }
@@ -122,7 +125,7 @@ void virtalloc_free(vap_t allocator, void *p) {
 
 void *virtalloc_malloc(vap_t allocator, const size_t size) {
     VirtualAllocator *alloc = allocator;
-    return alloc->malloc(alloc, size);
+    return alloc->malloc(alloc, size, 0);
 }
 
 void virtalloc_add_new_memory(vap_t allocator, void *memory, const size_t size) {
@@ -138,4 +141,18 @@ void virtalloc_set_release_mechanism(vap_t allocator, void (*release_memory)(voi
 void virtalloc_unset_release_mechanism(vap_t allocator) {
     VirtualAllocator *alloc = allocator;
     alloc->release_memory = NULL;
+}
+
+void virtalloc_set_request_mechanism(vap_t allocator, void *(*request_new_memory)(size_t min_size)) {
+    VirtualAllocator *alloc = allocator;
+    alloc->request_new_memory = request_new_memory;
+}
+
+void virtalloc_unset_request_mechanism(vap_t allocator) {
+    VirtualAllocator *alloc = allocator;
+    alloc->request_new_memory = NULL;
+}
+
+void virtalloc_dump_allocator_to_file(FILE *file, vap_t allocator) {
+    virtalloc_dump_allocator_to_file_impl(file, allocator);
 }

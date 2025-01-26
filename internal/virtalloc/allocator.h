@@ -3,8 +3,11 @@
 
 #include "virtalloc/virtual_allocator.h"
 #include <stddef.h>
+#include <stdio.h>
 
-void *virtalloc_malloc_impl(VirtualAllocator *allocator, size_t size);
+void virtalloc_dump_allocator_to_file_impl(FILE *file, VirtualAllocator *allocator);
+
+void *virtalloc_malloc_impl(VirtualAllocator *allocator, size_t size, int is_retry_run);
 
 void virtalloc_free_impl(VirtualAllocator *allocator, void *p);
 

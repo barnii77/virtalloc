@@ -36,7 +36,7 @@ MemorySlotMeta *get_meta(const VirtualAllocator *allocator, void *p, const int s
 void coalesce_slot_with_next(VirtualAllocator *allocator, MemorySlotMeta *meta, MemorySlotMeta *next_meta,
                              const int meta_requires_unbind, const int next_meta_requires_unbind,
                              const int out_requires_bind) {
-    assert(meta->is_free && next_meta->is_free && "illegal usage");
+    assert(meta->is_free && next_meta->is_free && meta->next == next_meta->data && "illegal usage");
 
     if (meta_requires_unbind)
         unbind_from_sorted_free_list(allocator, meta);
@@ -44,8 +44,9 @@ void coalesce_slot_with_next(VirtualAllocator *allocator, MemorySlotMeta *meta, 
         unbind_from_sorted_free_list(allocator, next_meta);
 
     // remove from normal linked list
+    MemorySlotMeta *next_next_meta = get_meta(allocator, next_meta->next, NO_EXPECTATION);
     meta->next = next_meta->next;
-    next_meta->next = meta->data;
+    next_next_meta->prev = meta->data;
     // merge
     meta->size += next_meta->size + sizeof(MemorySlotMeta);
 
@@ -53,10 +54,12 @@ void coalesce_slot_with_next(VirtualAllocator *allocator, MemorySlotMeta *meta, 
         insert_into_sorted_free_list(allocator, meta);
 
     refresh_checksum_of(allocator, meta);
+    refresh_checksum_of(allocator, next_next_meta);
 }
 
 void coalesce_memory_slots(VirtualAllocator *allocator, MemorySlotMeta *meta,
                            const int meta_requires_unbind_from_free_list) {
+    assert(allocator && meta && "illegal usage: allocator and meta must not be NULL");
     assert(meta->is_free && "illegal usage: can only coalesce a slot with it's neighbours if the slot is free");
     MemorySlotMeta *next_meta = get_meta(allocator, meta->next, NO_EXPECTATION);
     MemorySlotMeta *prev_meta = get_meta(allocator, meta->prev, NO_EXPECTATION);

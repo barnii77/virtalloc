@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Heap Visualizer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .file-input, .paste-input {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .table-container {
+            overflow-x: auto;
+            margin-top: 20px;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+
+        td {
+            width: 10px;
+            height: 10px;
+            border: 1px solid #ccc;
+            text-align: center;
+            vertical-align: middle;
+            font-size: 8px;
+            font-family: monospace;
+        }
+
+        .memory-slot {
+            background-color: white;
+            color: transparent;
+        }
+
+        .allocated-memory-slot {
+            background-color: black;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="toggle">
+        <button id="toggleInput">Switch to File Input</button>
+    </div>
+    <div class="file-input">
+        <p>Drag and drop a file here, or click to upload.</p>
+        <input type="file" id="fileInput">
+    </div>
+    <div class="paste-input" style="display: flex;">
+        <textarea id="pasteArea" rows="10" cols="50" placeholder="Paste heap dump content here..."></textarea>
+        <button id="processPaste">Process</button>
+    </div>
+    <div class="controls">
+        <button id="prevState">Previous State</button>
+        <button id="nextState">Next State</button>
+    </div>
+    <div class="table-container">
+        <table id="heapTable"></table>
+    </div>
+</div>
+
+<script>
+    const toggleButton = document.getElementById('toggleInput');
+    const fileInputContainer = document.querySelector('.file-input');
+    const pasteInputContainer = document.querySelector('.paste-input');
+    const fileInput = document.getElementById('fileInput');
+    const pasteArea = document.getElementById('pasteArea');
+    const processPasteButton = document.getElementById('processPaste');
+    const heapTable = document.getElementById('heapTable');
+    const prevButton = document.getElementById('prevState');
+    const nextButton = document.getElementById('nextState');
+
+    let heapStates = [];
+    let currentStateIndex = 0;
+
+    // Set paste input as default
+    fileInputContainer.style.display = 'none';
+    pasteInputContainer.style.display = 'flex';
+
+    toggleButton.addEventListener('click', () => {
+        if (fileInputContainer.style.display === 'none') {
+            fileInputContainer.style.display = 'flex';
+            pasteInputContainer.style.display = 'none';
+            toggleButton.textContent = 'Switch to Paste Input';
+        } else {
+            fileInputContainer.style.display = 'none';
+            pasteInputContainer.style.display = 'flex';
+            toggleButton.textContent = 'Switch to File Input';
+        }
+    });
+
+    fileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = () => processHeapDump(reader.result);
+            reader.readAsText(file);
+        }
+    });
+
+    processPasteButton.addEventListener('click', () => {
+        const content = pasteArea.value;
+        processHeapDump(content);
+    });
+
+    prevButton.addEventListener('click', () => {
+        if (currentStateIndex > 0) {
+            currentStateIndex--;
+            renderHeap(heapStates[currentStateIndex]);
+        }
+    });
+
+    nextButton.addEventListener('click', () => {
+        if (currentStateIndex < heapStates.length - 1) {
+            currentStateIndex++;
+            renderHeap(heapStates[currentStateIndex]);
+        }
+    });
+
+    function hashCode(str) {
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+            const char = str.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32-bit integer
+        }
+        return Math.abs(hash);
+    }
+
+    function generateDeterministicColor(address) {
+        // Remove '0x' prefix and pad to ensure consistent hashing
+        const cleanAddress = address.replace(/^0x/, '').padStart(16, '0');
+
+        // Generate hash from address
+        const hash = hashCode(cleanAddress);
+
+        // Use hash to generate consistent but varied color
+        const r = (hash & 0xFF0000) >> 16;
+        const g = (hash & 0x00FF00) >> 8;
+        const b = hash & 0x0000FF;
+
+        // Ensure minimum color brightness and separation
+        const brightness = (r + g + b) / 3;
+        const minBrightness = 50;
+        const maxBrightness = 200;
+
+        if (brightness < minBrightness) {
+            const scale = minBrightness / brightness;
+            return `rgb(${Math.min(r * scale, 255)},${Math.min(g * scale, 255)},${Math.min(b * scale, 255)})`;
+        }
+
+        if (brightness > maxBrightness) {
+            const scale = maxBrightness / brightness;
+            return `rgb(${r * scale},${g * scale},${b * scale})`;
+        }
+
+        return `rgb(${r},${g},${b})`;
+    }
+
+    function getComplementaryColor(rgbColor) {
+        // Extract RGB values
+        const match = rgbColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+        if (!match) return 'black';
+
+        const r = parseInt(match[1]);
+        const g = parseInt(match[2]);
+        const b = parseInt(match[3]);
+
+        // Calculate luminance
+        const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+
+        // Return black or white based on luminance for contrast
+        return luminance > 0.5 ? 'black' : 'white';
+    }
+
+    function processHeapDump(content) {
+        const states = content.split('===== ////////////////////////// =====').map(parseHeapState);
+        heapStates = states.filter(state => state.length > 0);
+        currentStateIndex = 0;
+        if (heapStates.length > 0) {
+            renderHeap(heapStates[0]);
+        }
+    }
+
+    function parseHeapState(stateText) {
+        const slots = [];
+        const slotRegex = /===== SLOT\s+\d+ \((.*?)\) =====\nSize: (\d+)\nFree: (Yes|No)\nData: (.*?)\n/g;
+        let match;
+
+        while ((match = slotRegex.exec(stateText)) !== null) {
+            const [, address, size, free, data] = match;
+            const slot = {
+                address,
+                size: parseInt(size, 10),
+                free: free === 'Yes',
+                metadata: new Array(64).fill('??'), // Add metadata as an array of 64 unknown cells
+                data: data.trim().split(' ').filter(d => d !== '......'),
+                color: generateDeterministicColor(address), // Use address-based color generation
+            };
+            slots.push(slot);
+        }
+        return slots;
+    }
+
+    function renderHeap(slots) {
+        heapTable.innerHTML = '';
+
+        let row;
+        slots.forEach((slot) => {
+            // Render metadata (64 bytes)
+            for (let i = 0; i < 64; i++) {
+                if (!row || row.children.length === 128) {
+                    row = document.createElement('tr');
+                    heapTable.appendChild(row);
+                }
+                const cell = document.createElement('td');
+                cell.classList.add('memory-slot');
+                if (!slot.free) {
+                    cell.classList.add('allocated-memory-slot');
+                }
+                cell.style.backgroundColor = slot.free ? 'white' : slot.color;
+                cell.style.color = slot.free ? 'transparent' : getComplementaryColor(slot.color);
+                const content = slot.metadata[i] || '';
+                cell.textContent = content === '??' ? '' : content.padStart(2, '0'); // Pad to 2 characters
+                row.appendChild(cell);
+            }
+
+            // Render data
+            for (let i = 0; i < slot.size; i++) {
+                if (!row || row.children.length === 128) {
+                    row = document.createElement('tr');
+                    heapTable.appendChild(row);
+                }
+                const cell = document.createElement('td');
+                cell.classList.add('memory-slot');
+                if (!slot.free) {
+                    cell.classList.add('allocated-memory-slot');
+                }
+                cell.style.backgroundColor = slot.free ? 'white' : slot.color;
+                cell.style.color = slot.free ? 'transparent' : getComplementaryColor(slot.color);
+                const content = slot.data[i] || '??';
+                cell.textContent = content === '??' ? '' : content.padStart(2, '0'); // Pad to 2 characters
+                row.appendChild(cell);
+            }
+        });
+    }
+</script>
+</body>
+</html>

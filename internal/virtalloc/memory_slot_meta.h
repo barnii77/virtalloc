@@ -1,5 +1,5 @@
-#ifndef MEMORY_SLOT_H
-#define MEMORY_SLOT_H
+#ifndef MEMORY_SLOT_META_H
+#define MEMORY_SLOT_META_H
 
 #include "virtalloc/alloc_settings.h"
 
