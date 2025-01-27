@@ -3,6 +3,6 @@
 
 #include <stddef.h>
 
-int get_checksum(size_t length, const char data[static length]);
+size_t get_checksum(size_t length, const char data[static length]);
 
 #endif

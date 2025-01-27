@@ -4,83 +4,96 @@
 #include <assert.h>
 #include <stdio.h>
 #include "virtalloc.h"
+#include "virtalloc/allocator_impl.h"
+#include "virtalloc/gp_memory_slot_meta.h"
 #include "virtalloc/allocator.h"
-#include "virtalloc/memory_slot_meta.h"
-#include "virtalloc/virtual_allocator.h"
-#include "virtalloc/alloc_settings.h"
+#include "virtalloc/allocator_settings.h"
 #include "virtalloc/allocator_utils.h"
+#include "virtalloc/small_rr_memory_slot_meta.h"
 
 vap_t new_virtual_allocator_from_impl(size_t size, char memory[static size], const int flags,
                                       const int memory_is_owned) {
-    const size_t num_buckets = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS ? NUM_BUCKETS_FEW_BUCKET_MODE : NUM_BUCKETS_DEFAULT;
+    const size_t num_buckets = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS
+                                   ? NUM_BUCKETS_FEW_BUCKET_MODE
+                                   : NUM_BUCKETS_DEFAULT;
     const double bucket_growth_factor = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS
-                                        ? BUCKET_SIZE_GROWTH_FACTOR_FEW_BUCKET_MODE
-                                        : BUCKET_SIZE_GROWTH_FACTOR_DEFAULT;
+                                            ? BUCKET_SIZE_GROWTH_FACTOR_FEW_BUCKET_MODE
+                                            : BUCKET_SIZE_GROWTH_FACTOR_DEFAULT;
 
-    size_t right_adjustment = ALLOCATION_ALIGN - (size_t) memory % ALLOCATION_ALIGN;
+    const size_t right_adjustment = (LARGE_ALLOCATION_ALIGN - (size_t) memory % LARGE_ALLOCATION_ALIGN) %
+                                    LARGE_ALLOCATION_ALIGN;
     memory += right_adjustment;
     size -= right_adjustment;
 
-    if (size < sizeof(VirtualAllocator) + num_buckets * sizeof(size_t) + num_buckets * sizeof(void *))
+    if (size < sizeof(Allocator) + num_buckets * sizeof(size_t) + num_buckets * sizeof(void *))
         return NULL;
     ThreadLock tl;
     init_lock(&tl);
-    VirtualAllocator va = {
-        .lock = tl, .self = (VirtualAllocator *) memory, .first_slot = NULL, .num_buckets = num_buckets,
-        .bucket_sizes = NULL, .bucket_values = NULL, .malloc = virtalloc_malloc_impl, .free = virtalloc_free_impl,
-        .realloc = virtalloc_realloc_impl, .add_new_memory = virtalloc_add_new_memory_impl, .release_memory = NULL,
-        .request_new_memory = NULL, .pre_alloc_op = virtalloc_pre_op_callback_impl,
-        .post_alloc_op = virtalloc_post_op_callback_impl, .intra_thread_lock_count = 0,
-        .memory_pointer_right_adjustment = right_adjustment,
+    Allocator va = {
+        .lock = tl,
+        .gpa = {
+            .max_slot_checks_before_oom = (size_t) -1, .first_slot = NULL, .num_buckets = num_buckets,
+            .bucket_sizes = NULL, .bucket_values = NULL
+        },
+        .sma = {.max_slot_checks_before_oom = (size_t) -1, .first_slot = NULL, .last_slot = NULL, .rr_slot = NULL},
+        .malloc = virtalloc_malloc_impl, .free = virtalloc_free_impl, .realloc = virtalloc_realloc_impl,
+        .gpa_add_new_memory = virtalloc_gpa_add_new_memory_impl,
+        .sma_add_new_memory = virtalloc_sma_add_new_memory_impl, .release_memory = NULL, .request_new_memory = NULL,
+        .pre_alloc_op = virtalloc_pre_op_callback_impl, .post_alloc_op = virtalloc_post_op_callback_impl,
+        .intra_thread_lock_count = 0, .memory_pointer_right_adjustment = right_adjustment,
         .has_checksum = (flags & VIRTALLOC_FLAG_VA_HAS_CHECKSUM) != 0,
         .enable_safety_checks = (flags & VIRTALLOC_FLAG_VA_HAS_NON_CHECKSUM_SAFETY_CHECKS) != 0,
         .memory_is_owned = memory_is_owned, .release_only_allocator = 1, .assume_thread_safe_usage = 0,
+        .no_rr_allocator = (flags & VIRTALLOC_FLAG_VA_NO_RR_ALLOCATOR) != 0
     };
-    va.bucket_sizes = (size_t *) &memory[sizeof(VirtualAllocator)];
-    va.bucket_values = (void **) &memory[sizeof(VirtualAllocator) + va.num_buckets * sizeof(size_t)];
-    va.first_slot = memory + sizeof(VirtualAllocator) + va.num_buckets * sizeof(size_t)
-                    + va.num_buckets * sizeof(void *) + sizeof(MemorySlotMeta);
-    const size_t remaining_slot_size = (void *) memory + size - va.first_slot;
-    if (remaining_slot_size < MIN_ALLOCATION_SIZE)
-        va.first_slot = NULL;
-    *(VirtualAllocator *) memory = va;
+    va.gpa.bucket_sizes = (size_t *) &memory[sizeof(Allocator)];
+    va.gpa.bucket_values = (void **) &memory[sizeof(Allocator) + va.gpa.num_buckets * sizeof(size_t)];
+    va.gpa.first_slot = memory + sizeof(Allocator) + va.gpa.num_buckets * sizeof(size_t)
+                        + va.gpa.num_buckets * sizeof(void *) + sizeof(GPMemorySlotMeta);
+    const size_t remaining_slot_size = (void *) memory + size - va.gpa.first_slot;
+    if (remaining_slot_size < MIN_LARGE_ALLOCATION_SIZE)
+        va.gpa.first_slot = NULL;
+    *(Allocator *) memory = va;
 
     // initialize bucket sizes and values
-    double current_bucket_size = MIN_ALLOCATION_SIZE;
-    for (size_t i = 0; i < va.num_buckets; i++) {
-        va.bucket_sizes[i] = (size_t) current_bucket_size;
+    double current_bucket_size = MIN_LARGE_ALLOCATION_SIZE;
+    for (size_t i = 0; i < va.gpa.num_buckets; i++) {
+        va.gpa.bucket_sizes[i] = (size_t) current_bucket_size;
         current_bucket_size *= bucket_growth_factor;
     }
-    memset(va.bucket_values, 0, va.num_buckets * sizeof(void *));
+    memset(va.gpa.bucket_values, 0, va.gpa.num_buckets * sizeof(void *));
 
     // if the remaining memory can be used for a memory slot, initialize it
-    if (va.first_slot) {
-        MemorySlotMeta *first_slot_meta_ptr = va.first_slot - sizeof(MemorySlotMeta);
-        const MemorySlotMeta first_slot_meta_content = {
-            .sizeof_meta = sizeof(MemorySlotMeta), .checksum = 0, .size = remaining_slot_size, .data = va.first_slot,
-            .next = va.first_slot, .prev = va.first_slot, .next_bigger_free = va.first_slot,
-            .next_smaller_free = va.first_slot, .is_free = 1, .memory_is_owned = 0,
-            .memory_pointer_right_adjustment = 0, .meta_type = NORMAL_MEMORY_SLOT_META_TYPE
+    if (va.gpa.first_slot) {
+        GPMemorySlotMeta *first_slot_meta_ptr = va.gpa.first_slot - sizeof(GPMemorySlotMeta);
+        const GPMemorySlotMeta first_slot_meta_content = {
+            .checksum = 0, .size = remaining_slot_size, .data = va.gpa.first_slot, .next = va.gpa.first_slot,
+            .prev = va.gpa.first_slot, .next_bigger_free = va.gpa.first_slot, .next_smaller_free = va.gpa.first_slot,
+            .is_free = 1, .memory_is_owned = 0, .memory_pointer_right_adjustment = 0, .__bit_padding1 = 0,
+            .__padding = {0}, .__bit_padding2 = 0, .meta_type = GP_META_TYPE_SLOT
         };
         *first_slot_meta_ptr = first_slot_meta_content;
         refresh_checksum_of(&va, first_slot_meta_ptr);
 
-        for (size_t bi = 0; bi < va.num_buckets; bi++)
-            if (va.bucket_sizes[bi] <= remaining_slot_size)
-                va.bucket_values[bi] = va.first_slot;
+        for (size_t bi = 0; bi < va.gpa.num_buckets; bi++)
+            if (va.gpa.bucket_sizes[bi] <= remaining_slot_size)
+                va.gpa.bucket_values[bi] = va.gpa.first_slot;
     }
 
     return memory;
 }
 
-vap_t virtalloc_new_virtual_allocator_from(const size_t size, char memory[static size], const int flags) {
+vap_t virtalloc_new_allocator_in(const size_t size, char memory[static size], const int flags) {
     return new_virtual_allocator_from_impl(size, memory, flags, 0);
 }
 
-vap_t virtalloc_new_virtual_allocator(size_t size, const int flags) {
-    const size_t num_buckets = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS ? NUM_BUCKETS_FEW_BUCKET_MODE : NUM_BUCKETS_DEFAULT;
-    size += sizeof(VirtualAllocator) + num_buckets * sizeof(size_t) + num_buckets * sizeof(void *);
-    char *memory = malloc(size + ALLOCATION_ALIGN - 1);
+vap_t virtalloc_new_allocator(size_t size, const int flags) {
+    const size_t num_buckets = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS
+                                   ? NUM_BUCKETS_FEW_BUCKET_MODE
+                                   : NUM_BUCKETS_DEFAULT;
+    size += sizeof(Allocator) + num_buckets * sizeof(size_t) + num_buckets * sizeof(void *) + LARGE_ALLOCATION_ALIGN -
+            1;
+    char *memory = malloc(size);
     if (!memory)
         return NULL;
     vap_t alloc = new_virtual_allocator_from_impl(size, memory, flags, 1);
@@ -90,69 +103,114 @@ vap_t virtalloc_new_virtual_allocator(size_t size, const int flags) {
     return alloc;
 }
 
-void virtalloc_destroy_virtual_allocator(vap_t allocator) {
-    VirtualAllocator *alloc = allocator;
+void virtalloc_destroy_allocator(vap_t allocator) {
+    Allocator *alloc = allocator;
     lock_virtual_allocator(alloc);
-    if (alloc->release_memory) {
-        if (alloc->memory_is_owned)
-            alloc->release_memory(allocator - alloc->memory_pointer_right_adjustment);
-        if (!alloc->release_only_allocator) {
-            int is_first_iter = 1;
-            void *starting_slot = alloc->first_slot;
-            MemorySlotMeta *meta = get_meta(alloc, starting_slot, NO_EXPECTATION);
-            while (meta->data != starting_slot || is_first_iter) {
-                if (meta->memory_is_owned)
-                    alloc->release_memory((void *) meta - meta->memory_pointer_right_adjustment);
-                is_first_iter = 0;
-                assert(meta->next && "encountered NULL where it should never happen");
-                meta = get_meta(allocator, meta->next, NO_EXPECTATION);
+
+    if (!alloc->release_memory || alloc->release_only_allocator)
+        goto finalize;
+
+    // release the general purpose allocators memory
+    int is_first_iter = 1;
+    void *starting_slot = alloc->gpa.first_slot;
+    if (starting_slot) {
+        GPMemorySlotMeta *gpa_meta = get_meta(alloc, starting_slot, NO_EXPECTATION);
+        void *next_to_dealloc = NULL;
+        while (gpa_meta->data != starting_slot || is_first_iter) {
+            is_first_iter = 0;
+            if (gpa_meta->memory_is_owned) {
+                if (next_to_dealloc)
+                    alloc->release_memory(next_to_dealloc);
+                next_to_dealloc = (void *) gpa_meta - gpa_meta->memory_pointer_right_adjustment;
+            }
+            assert(gpa_meta->next && "encountered NULL where it should never happen");
+            gpa_meta = get_meta(allocator, gpa_meta->next, NO_EXPECTATION);
+        }
+        if (next_to_dealloc)
+            alloc->release_memory(next_to_dealloc);
+    }
+
+    if (alloc->no_rr_allocator)
+        goto finalize;
+
+    // release the RR allocator's memory
+    is_first_iter = 1;
+    starting_slot = alloc->sma.first_slot;
+    if (starting_slot) {
+        void *slot = starting_slot;
+        void *next_to_dealloc = NULL;
+        while (slot != starting_slot || is_first_iter) {
+            is_first_iter = 0;
+            const SmallRRMemorySlotMeta *meta = slot - sizeof(SmallRRMemorySlotMeta);
+            if (meta->meta_type == RR_META_TYPE_LINK) {
+                void *next_slot = *(void **) slot;
+                if (next_to_dealloc)
+                    alloc->release_memory(next_to_dealloc);
+                const SmallRRStartOfMemoryChunkMeta *mcm =
+                        next_slot - sizeof(SmallRRMemorySlotMeta) - sizeof(SmallRRStartOfMemoryChunkMeta);
+                next_to_dealloc = *(void **) &mcm->memory_chunk_ptr_raw_bytes;
+                slot = next_slot;
+            } else {
+                assert(meta->meta_type == RR_META_TYPE_SLOT && "unreachable");
+                slot = get_next_rr_slot(alloc, slot);
             }
         }
+        if (next_to_dealloc)
+            alloc->release_memory(next_to_dealloc);
     }
+
+finalize:
     unlock_virtual_allocator(alloc);
     destroy_lock(&alloc->lock);
+    if (alloc->release_memory && alloc->memory_is_owned)
+        alloc->release_memory(allocator - alloc->memory_pointer_right_adjustment);
 }
 
 void *virtalloc_realloc(vap_t allocator, void *p, const size_t size) {
-    VirtualAllocator *alloc = allocator;
+    Allocator *alloc = allocator;
     return alloc->realloc(alloc, p, size);
 }
 
 void virtalloc_free(vap_t allocator, void *p) {
-    VirtualAllocator *alloc = allocator;
+    Allocator *alloc = allocator;
     alloc->free(alloc, p);
 }
 
 void *virtalloc_malloc(vap_t allocator, const size_t size) {
-    VirtualAllocator *alloc = allocator;
+    Allocator *alloc = allocator;
     return alloc->malloc(alloc, size, 0);
 }
 
-void virtalloc_add_new_memory(vap_t allocator, void *memory, const size_t size) {
-    VirtualAllocator *alloc = allocator;
-    alloc->add_new_memory(alloc, memory, size);
-}
-
 void virtalloc_set_release_mechanism(vap_t allocator, void (*release_memory)(void *p)) {
-    VirtualAllocator *alloc = allocator;
+    Allocator *alloc = allocator;
     alloc->release_memory = release_memory;
 }
 
 void virtalloc_unset_release_mechanism(vap_t allocator) {
-    VirtualAllocator *alloc = allocator;
+    Allocator *alloc = allocator;
     alloc->release_memory = NULL;
 }
 
 void virtalloc_set_request_mechanism(vap_t allocator, void *(*request_new_memory)(size_t min_size)) {
-    VirtualAllocator *alloc = allocator;
+    Allocator *alloc = allocator;
     alloc->request_new_memory = request_new_memory;
 }
 
 void virtalloc_unset_request_mechanism(vap_t allocator) {
-    VirtualAllocator *alloc = allocator;
+    Allocator *alloc = allocator;
     alloc->request_new_memory = NULL;
 }
 
-void virtalloc_dump_allocator_to_file(FILE *file, vap_t allocator) {
+void virtalloc_set_max_gpa_slot_checks_before_oom(vap_t allocator, const size_t max_slot_checks) {
+    Allocator *alloc = allocator;
+    alloc->gpa.max_slot_checks_before_oom = max_slot_checks;
+}
+
+void virtalloc_set_max_sma_slot_checks_before_oom(vap_t allocator, const size_t max_slot_checks) {
+    Allocator *alloc = allocator;
+    alloc->sma.max_slot_checks_before_oom = max_slot_checks;
+}
+
+void virtalloc_dump_allocator_metadata_to_file(FILE *file, vap_t allocator) {
     virtalloc_dump_allocator_to_file_impl(file, allocator);
 }
