@@ -17,10 +17,6 @@ typedef struct SmallRRAllocator {
     void *rr_slot;
 } SmallRRAllocator;
 
-// TODO if a specific bucket size pattern can be assumed (eg a specific growth factor per bucket), then you may actually
-// be able to do better than linear search through the buckets (e.g. instead of linear search, binary search more or
-// less by repeated squaring exponentiation that then tells you how much to advance exponentially).
-
 /// General Purpose Allocator: the main allocator used by default. In practice, it is used for medium and large
 /// allocations (size >= 64 bytes). It maintains a sorted free list with a bucket mechanism to massively reduce the
 /// amount of searched slots. The allocator is thread safe.

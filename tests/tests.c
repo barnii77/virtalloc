@@ -413,7 +413,6 @@ int monolithic_test_rr_8() {
     int *y_realloc = virtalloc_realloc(alloc, y, 66 * sizeof(int));
 
     // this should now allocate where y used to be
-    // FIXME this address gets the wrong alignment, so there must be a bug
     MAKE_AUTO_INIT_INT_ALLOC(w, 32);
 
     if (w <= y_realloc)
@@ -425,7 +424,6 @@ int monolithic_test_rr_8() {
     ASSERT_CORRECT_CONTENT(x, 2);
     ASSERT_CORRECT_CONTENT(y_realloc, 15);
 
-    // FIXME this one also gets wrong alignment
     int *y_realloc_2 = virtalloc_realloc(alloc, y_realloc, 96 * sizeof(int));
     TEST_ASSERT_MSG(y_realloc != y_realloc_2, "realloc without free space didn't move");
     ASSERT_CORRECT_CONTENT(y_realloc, 15);

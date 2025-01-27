@@ -9,15 +9,31 @@
 #include "virtalloc/allocator_settings.h"
 #include "virtalloc/small_rr_memory_slot_meta.h"
 
-// TODO if a specific bucket size pattern can be assumed (eg a specific growth factor per bucket), then you may actually
-// be able to do better than linear search through the buckets (e.g. instead of linear search, binary search more or
-// less by repeated squaring exponentiation that then tells you how much to advance exponentially).
+size_t linear_search(const size_t needle, const size_t array_size, const size_t array[static array_size]) {
+    for (size_t i = 0; i < array_size; i++)
+        if (array[i] > needle)
+            return i - 1;
+    return array_size - 1;
+}
+
+size_t binary_search(const size_t needle, const size_t array_size, const size_t array[static array_size]) {
+    size_t left = 0;
+    size_t right = array_size - 1;
+    while (left <= right) {
+        const size_t mid = left + (right - left) / 2;
+        if (array[mid] == needle)
+            return mid;
+        if (array[mid] < needle)
+            left = mid + 1;
+        else
+            right = mid - 1;
+    }
+    return right;
+}
+
 size_t get_bucket_index(const Allocator *allocator, const size_t size) {
     assert(size >= MIN_LARGE_ALLOCATION_SIZE && "allocation smaller than smallest allowed allocation size");
-    for (size_t i = 0; i < allocator->gpa.num_buckets; i++)
-        if (allocator->gpa.bucket_sizes[i] > size)
-            return i - 1;
-    return allocator->gpa.num_buckets - 1;
+    return binary_search(size, allocator->gpa.num_buckets, allocator->gpa.bucket_sizes);
 }
 
 GPMemorySlotMeta *get_meta(const Allocator *allocator, void *p, const int should_be_free) {
@@ -45,6 +61,7 @@ void *get_next_rr_slot(const Allocator *allocator, void *rr_slot) {
         return next_slot;
     }
     assert(0 && "unreachable");
+    return NULL;
 }
 
 void coalesce_slot_with_next(Allocator *allocator, GPMemorySlotMeta *meta, GPMemorySlotMeta *next_meta,
