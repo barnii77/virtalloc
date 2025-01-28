@@ -55,7 +55,7 @@ typedef struct Allocator {
     void (*gpa_add_new_memory)(struct Allocator *allocator, void *p, size_t size);
 
     /// the function used to give the round-robin small allocator new memory it can use (assumed to be free initially)
-    void (*sma_add_new_memory)(struct Allocator *allocator, void *p, size_t size);
+    void (*sma_add_new_memory)(struct Allocator *allocator, void *p, size_t size, int must_free_later);
 
     /// callback used when the VA is released: it is called on each owned memory slot (can be `free` for example)
     void (*release_memory)(void *p);
@@ -72,6 +72,11 @@ typedef struct Allocator {
 
     /// a callback invoked *after* an allocator operation (one of the callbacks defined below)
     void (*post_alloc_op)(struct Allocator *allocator);
+
+    /// decides how many bytes of padding should be added after an allocated slot to make the allocator more robust
+    /// against off-by-1 errors and similar user-made bugs that may interfere with heap metadata. The way this is
+    /// implemented is really simple - you literally just add this number times ALIGN to the size of every allocation.
+    size_t (*get_gpa_padding_lines)(size_t allocation_size);
 
     /// the number of times the allocator has been locked. The global lock will be released when this count reaches 0.
     /// Note that this counter is only used within a thread to keep track of the lock/unlock counts and is thread safe
@@ -92,6 +97,11 @@ typedef struct Allocator {
     unsigned assume_thread_safe_usage: 1;
     /// if set, disables the round-robin allocator for small allocations
     unsigned no_rr_allocator: 1;
+    /// temporarily disables the most verbose of logging, e.g. if a function for logging makes a bunch of calls to
+    /// another function that would do logging every time as well
+    unsigned block_logging: 1;
+    /// if set, the SMA requests memory using the GPA instead of making a malloc call itself directly
+    unsigned sma_request_mem_from_gpa: 1;
 } __attribute__((aligned(LARGE_ALLOCATION_ALIGN))) Allocator;
 
 void lock_virtual_allocator(Allocator *allocator);

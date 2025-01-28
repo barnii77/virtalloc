@@ -10,15 +10,38 @@
 #include "virtalloc/allocator_settings.h"
 #include "virtalloc/allocator_utils.h"
 #include "virtalloc/small_rr_memory_slot_meta.h"
+#include "virtalloc/helper_macros.h"
+
+size_t get_padding_lines_impl(const size_t allocation_size) {
+    if (allocation_size < MIN_SIZE_FOR_SAFETY_PADDING)
+        return 0;
+    return 1;
+}
+
+size_t get_num_buckets_from_flags(const int flags) {
+    return flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS
+               ? NUM_BUCKETS_FEW_BUCKETS_MODE
+               : flags & VIRTALLOC_FLAG_VA_MANY_BUCKETS
+                     ? NUM_BUCKETS_MANY_BUCKETS_MODE
+                     : flags & VIRTALLOC_FLAG_VA_MAX_BUCKETS
+                           ? NUM_BUCKETS_MAX_BUCKETS_MODE
+                           : NUM_BUCKETS_NORMAL_BUCKETS_MODE;
+}
+
+double get_bucket_growth_factor_from_flags(const int flags) {
+    return flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS
+               ? BUCKET_SIZE_GROWTH_FACTOR_FEW_BUCKETS_MODE
+               : flags & VIRTALLOC_FLAG_VA_MANY_BUCKETS
+                     ? BUCKET_SIZE_GROWTH_FACTOR_MANY_BUCKETS_MODE
+                     : flags & VIRTALLOC_FLAG_VA_MAX_BUCKETS
+                           ? BUCKET_SIZE_GROWTH_FACTOR_MAX_BUCKETS_MODE
+                           : BUCKET_SIZE_GROWTH_FACTOR_NORMAL_BUCKETS_MODE;
+}
 
 vap_t new_virtual_allocator_from_impl(size_t size, char memory[static size], const int flags,
                                       const int memory_is_owned) {
-    const size_t num_buckets = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS
-                                   ? NUM_BUCKETS_FEW_BUCKET_MODE
-                                   : NUM_BUCKETS_DEFAULT;
-    const double bucket_growth_factor = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS
-                                            ? BUCKET_SIZE_GROWTH_FACTOR_FEW_BUCKET_MODE
-                                            : BUCKET_SIZE_GROWTH_FACTOR_DEFAULT;
+    const size_t num_buckets = get_num_buckets_from_flags(flags);
+    const double bucket_growth_factor = get_bucket_growth_factor_from_flags(flags);
 
     const size_t right_adjustment = (LARGE_ALLOCATION_ALIGN - (size_t) memory % LARGE_ALLOCATION_ALIGN) %
                                     LARGE_ALLOCATION_ALIGN;
@@ -41,10 +64,12 @@ vap_t new_virtual_allocator_from_impl(size_t size, char memory[static size], con
         .sma_add_new_memory = virtalloc_sma_add_new_memory_impl, .release_memory = NULL, .request_new_memory = NULL,
         .pre_alloc_op = virtalloc_pre_op_callback_impl, .post_alloc_op = virtalloc_post_op_callback_impl,
         .intra_thread_lock_count = 0, .memory_pointer_right_adjustment = right_adjustment,
+        .get_gpa_padding_lines = flags & VIRTALLOC_FLAG_VA_HAS_SAFETY_PADDING_LINE ? get_padding_lines_impl : NULL,
         .has_checksum = (flags & VIRTALLOC_FLAG_VA_HAS_CHECKSUM) != 0,
         .enable_safety_checks = (flags & VIRTALLOC_FLAG_VA_HAS_NON_CHECKSUM_SAFETY_CHECKS) != 0,
         .memory_is_owned = memory_is_owned, .release_only_allocator = 1, .assume_thread_safe_usage = 0,
-        .no_rr_allocator = (flags & VIRTALLOC_FLAG_VA_NO_RR_ALLOCATOR) != 0
+        .no_rr_allocator = (flags & VIRTALLOC_FLAG_VA_NO_RR_ALLOCATOR) != 0, .block_logging = 0,
+        .sma_request_mem_from_gpa = (flags & VIRTALLOC_FLAG_VA_SMA_REQUEST_MEM_FROM_GPA) != 0
     };
     va.gpa.bucket_sizes = (size_t *) &memory[sizeof(Allocator)];
     va.gpa.bucket_values = (void **) &memory[sizeof(Allocator) + va.gpa.num_buckets * sizeof(size_t)];
@@ -88,9 +113,7 @@ vap_t virtalloc_new_allocator_in(const size_t size, char memory[static size], co
 }
 
 vap_t virtalloc_new_allocator(size_t size, const int flags) {
-    const size_t num_buckets = flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS
-                                   ? NUM_BUCKETS_FEW_BUCKET_MODE
-                                   : NUM_BUCKETS_DEFAULT;
+    const size_t num_buckets = get_num_buckets_from_flags(flags);
     size += sizeof(Allocator) + num_buckets * sizeof(size_t) + num_buckets * sizeof(void *) + LARGE_ALLOCATION_ALIGN -
             1;
     char *memory = malloc(size);
@@ -123,7 +146,7 @@ void virtalloc_destroy_allocator(vap_t allocator) {
                     alloc->release_memory(next_to_dealloc);
                 next_to_dealloc = (void *) gpa_meta - gpa_meta->memory_pointer_right_adjustment;
             }
-            assert(gpa_meta->next && "encountered NULL where it should never happen");
+            assert_internal(gpa_meta->next && "encountered NULL where it should never happen");
             gpa_meta = get_meta(allocator, gpa_meta->next, NO_EXPECTATION);
         }
         if (next_to_dealloc)
@@ -148,10 +171,12 @@ void virtalloc_destroy_allocator(vap_t allocator) {
                     alloc->release_memory(next_to_dealloc);
                 const SmallRRStartOfMemoryChunkMeta *mcm =
                         next_slot - sizeof(SmallRRMemorySlotMeta) - sizeof(SmallRRStartOfMemoryChunkMeta);
-                next_to_dealloc = *(void **) &mcm->memory_chunk_ptr_raw_bytes;
+                next_to_dealloc = mcm->must_release_chunk_on_destroy
+                                      ? *(void **) &mcm->memory_chunk_ptr_raw_bytes
+                                      : NULL;
                 slot = next_slot;
             } else {
-                assert(meta->meta_type == RR_META_TYPE_SLOT && "unreachable");
+                assert_internal(meta->meta_type == RR_META_TYPE_SLOT && "unreachable");
                 slot = get_next_rr_slot(alloc, slot);
             }
         }

@@ -24,6 +24,6 @@ void virtalloc_post_op_callback_impl(Allocator *allocator);
 void virtalloc_gpa_add_new_memory_impl(Allocator *allocator, void *p, size_t size);
 
 /// transfers ownership of the given memory to the allocator
-void virtalloc_sma_add_new_memory_impl(Allocator *allocator, void *p, size_t size);
+void virtalloc_sma_add_new_memory_impl(Allocator *allocator, void *p, size_t size, int must_free_later);
 
 #endif

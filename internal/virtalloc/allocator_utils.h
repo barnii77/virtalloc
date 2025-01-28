@@ -4,10 +4,15 @@
 #include <stddef.h>
 #include "virtalloc/allocator_impl.h"
 #include "virtalloc/gp_memory_slot_meta.h"
+#include "virtalloc/small_rr_memory_slot_meta.h"
 
 #define NO_EXPECTATION (-1)
 #define EXPECT_IS_ALLOCATED 0
 #define EXPECT_IS_FREE 1
+
+void dump_gp_slot_meta_to_file(FILE *file, GPMemorySlotMeta *meta, size_t slot_num);
+
+void dump_sm_slot_meta_to_file(FILE *file, SmallRRMemorySlotMeta *meta, size_t slot_num);
 
 size_t get_bucket_index(const Allocator *allocator, size_t size);
 

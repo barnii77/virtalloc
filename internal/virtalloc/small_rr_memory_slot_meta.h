@@ -10,7 +10,8 @@ typedef struct SmallRRMemorySlotMeta {
 typedef struct SmallRRStartOfMemoryChunkMeta {
     /// this is actually a void* stored as raw bytes for alignment reasons
     char memory_chunk_ptr_raw_bytes[sizeof(void *)];
-    char __padding[63 - sizeof(void *)];  // pad this to 63 bytes
+    unsigned char must_release_chunk_on_destroy: 1;
+    char __padding[63 - sizeof(void *) - sizeof(unsigned char)];  // pad this to 63 bytes
 } SmallRRStartOfMemoryChunkMeta;
 
 typedef struct SmallRRNextSlotLink {

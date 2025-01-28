@@ -8,6 +8,28 @@
 #include "virtalloc/gp_memory_slot_meta.h"
 #include "virtalloc/allocator_settings.h"
 #include "virtalloc/small_rr_memory_slot_meta.h"
+#include "virtalloc/math_utils.h"
+#include "virtalloc/helper_macros.h"
+
+void dump_gp_slot_meta_to_file(FILE *file, GPMemorySlotMeta *meta, const size_t slot_num) {
+    fprintf(file, "===== GENERAL PURPOSE SLOT %4zu (%p) =====\n", slot_num, meta->data);
+    fprintf(file, "Size: %zu\n", meta->size);
+    fprintf(file, "Free: %s\n", meta->is_free ? "Yes" : "No");
+    fprintf(file, "Data: ");
+    for (size_t j = 0; j < min(16, MIN_LARGE_ALLOCATION_SIZE); j++)
+        fprintf(file, "%x ", ((unsigned char *) meta->data)[j] % 256);
+    fprintf(file, " ......\n");
+}
+
+void dump_sm_slot_meta_to_file(FILE *file, SmallRRMemorySlotMeta *meta, const size_t slot_num) {
+    fprintf(file, "===== SMALL SLOT %4zu (%p) =====\n", slot_num, (void *) meta + sizeof(SmallRRMemorySlotMeta));
+    fprintf(file, "Size: %d\n", MAX_TINY_ALLOCATION_SIZE);
+    fprintf(file, "Free: %s\n", meta->is_free ? "Yes" : "No");
+    fprintf(file, "Data: ");
+    for (size_t j = 0; j < min(16, MAX_TINY_ALLOCATION_SIZE); j++)
+        fprintf(file, "%x ", ((unsigned char *) meta + sizeof(SmallRRMemorySlotMeta))[j] % 256);
+    fprintf(file, " ......\n");
+}
 
 size_t linear_search(const size_t needle, const size_t array_size, const size_t array[static array_size]) {
     for (size_t i = 0; i < array_size; i++)
@@ -32,42 +54,72 @@ size_t binary_search(const size_t needle, const size_t array_size, const size_t 
 }
 
 size_t get_bucket_index(const Allocator *allocator, const size_t size) {
-    assert(size >= MIN_LARGE_ALLOCATION_SIZE && "allocation smaller than smallest allowed allocation size");
+    assert_internal(size >= MIN_LARGE_ALLOCATION_SIZE && "allocation smaller than smallest allowed allocation size");
     return binary_search(size, allocator->gpa.num_buckets, allocator->gpa.bucket_sizes);
 }
 
 GPMemorySlotMeta *get_meta(const Allocator *allocator, void *p, const int should_be_free) {
+    debug_print_enter_fn(allocator->block_logging, "get_meta");
     GPMemorySlotMeta *meta = p - sizeof(GPMemorySlotMeta);
-    assert(
+
+#ifdef VIRTALLOC_LOGGING
+    if (!allocator->block_logging) {
+        // dump the bucket values to stderr
+        fprintf(stderr, "++++++++++ DEBUG BUCKET DUMP\n");
+        for (size_t i = 0; i < allocator->gpa.num_buckets; i++) {
+            if (allocator->gpa.bucket_values[i]) {
+                GPMemorySlotMeta *bvm = allocator->gpa.bucket_values[i] - sizeof(GPMemorySlotMeta);
+                dump_gp_slot_meta_to_file(stderr, bvm, i + 1);
+                if (!bvm->is_free) {
+                    fprintf(stderr, "WARNING: ALLOCATED SLOT IN FREE LIST\n");
+                }
+                if (allocator->has_checksum && get_checksum(
+                        sizeof(*bvm) - offsetof(GPMemorySlotMeta, checksum) - sizeof(bvm->
+                            checksum), (void *) bvm + offsetof(GPMemorySlotMeta, checksum) + sizeof(bvm->checksum)) !=
+                    bvm->checksum) {
+                    fprintf(stderr, "WARNING: CHECKSUM INVALID\n");
+                }
+            }
+        }
+        fprintf(stderr, "++++++++++\n");
+    }
+#endif
+
+    assert_external(
         !(allocator->has_checksum && get_checksum(sizeof(*meta) - offsetof(GPMemorySlotMeta, checksum) - sizeof(meta->
             checksum), (void *) meta + offsetof(GPMemorySlotMeta, checksum) + sizeof(meta->checksum)) != meta->checksum)
-        && "checksum incorrect: you likely passed a pointer to free/realloc that does not correspond to an allocation");
-    if (!allocator->enable_safety_checks)
+        && "checksum incorrect: you likely passed a pointer to free/realloc that does not correspond to an allocation or otherwise corrupted the allocator's metadata");
+    if (!allocator->enable_safety_checks) {
+        debug_print_leave_fn(allocator->block_logging, "get_meta");
         return meta;
-    assert(!(should_be_free != NO_EXPECTATION && !!meta->is_free != should_be_free) && "unexpected allocation status");
+    }
+    assert_external(!(should_be_free != NO_EXPECTATION && !!meta->is_free != should_be_free) && "unexpected allocation status: potential double free");
+    debug_print_leave_fn(allocator->block_logging, "get_meta");
     return meta;
 }
 
 void *get_next_rr_slot(const Allocator *allocator, void *rr_slot) {
+    assert_internal(!allocator->no_rr_allocator);
     const SmallRRMemorySlotMeta *meta = rr_slot - sizeof(SmallRRMemorySlotMeta);
     if (meta->meta_type == RR_META_TYPE_SLOT)
         return rr_slot + MAX_TINY_ALLOCATION_SIZE;
     if (meta->meta_type == RR_META_TYPE_LINK) {
         void *next_slot = *(void **) rr_slot;
-        assert(next_slot && "unreachable");
+        assert_internal(next_slot && "unreachable");
         // multi-redirect using links isn't allowed
         const SmallRRMemorySlotMeta *next_meta = next_slot - sizeof(SmallRRMemorySlotMeta);
-        assert(next_meta->meta_type == RR_META_TYPE_SLOT && "unreachable");
+        assert_internal(next_meta->meta_type == RR_META_TYPE_SLOT && "unreachable");
         return next_slot;
     }
-    assert(0 && "unreachable");
+    assert_internal(0 && "unreachable");
     return NULL;
 }
 
 void coalesce_slot_with_next(Allocator *allocator, GPMemorySlotMeta *meta, GPMemorySlotMeta *next_meta,
                              const int meta_requires_unbind, const int next_meta_requires_unbind,
                              const int out_requires_bind) {
-    assert(meta->is_free && next_meta->is_free && meta->next == next_meta->data && "illegal usage");
+    debug_print_enter_fn(allocator->block_logging, "coalesce_slot_with_next");
+    assert_internal(meta->is_free && next_meta->is_free && meta->next == next_meta->data && "illegal usage");
 
     if (meta_requires_unbind)
         unbind_from_sorted_free_list(allocator, meta);
@@ -80,18 +132,23 @@ void coalesce_slot_with_next(Allocator *allocator, GPMemorySlotMeta *meta, GPMem
     next_next_meta->prev = meta->data;
     // merge
     meta->size += next_meta->size + sizeof(GPMemorySlotMeta);
+    // invalidate the checksum of the next meta to catch bugs more easily
+    next_meta->checksum = 0;
 
+    refresh_checksum_of(allocator, meta);
     if (out_requires_bind)
         insert_into_sorted_free_list(allocator, meta);
 
     refresh_checksum_of(allocator, meta);
     refresh_checksum_of(allocator, next_next_meta);
+    debug_print_leave_fn(allocator->block_logging, "coalesce_slot_with_next");
 }
 
 void coalesce_memory_slots(Allocator *allocator, GPMemorySlotMeta *meta,
                            const int meta_requires_unbind_from_free_list) {
-    assert(allocator && meta && "illegal usage: allocator and meta must not be NULL");
-    assert(meta->is_free && "illegal usage: can only coalesce a slot with it's neighbours if the slot is free");
+    debug_print_enter_fn(allocator->block_logging, "coalesce_memory_slots");
+    assert_internal(allocator && meta && "illegal usage: allocator and meta must not be NULL");
+    assert_internal(meta->is_free && "illegal usage: can only coalesce a slot with it's neighbours if the slot is free");
     GPMemorySlotMeta *next_meta = get_meta(allocator, meta->next, NO_EXPECTATION);
     GPMemorySlotMeta *prev_meta = get_meta(allocator, meta->prev, NO_EXPECTATION);
 
@@ -113,31 +170,38 @@ void coalesce_memory_slots(Allocator *allocator, GPMemorySlotMeta *meta,
     // first place, we still need to place it there
     if (!coalesce_with_next && !coalesce_with_prev && !meta_requires_unbind_from_free_list)
         insert_into_sorted_free_list(allocator, meta);
+    debug_print_leave_fn(allocator->block_logging, "coalesce_slot_with_next");
 }
 
 void unbind_from_sorted_free_list(Allocator *allocator, GPMemorySlotMeta *meta) {
+    debug_print_enter_fn(allocator->block_logging, "unbind_from_sorted_free_list");
     int is_only_free_slot = 0;
     if (meta->data == meta->next_bigger_free) {
-        assert(meta->data == meta->next_smaller_free && "unreachable");
+        assert_internal(meta->data == meta->next_smaller_free && "unreachable");
         is_only_free_slot = 1;
     }
     size_t bucket_idx = get_bucket_index(allocator, meta->size);
+    // must replace with next bigger slot
+    const GPMemorySlotMeta *replacement = is_only_free_slot
+                                              ? NULL
+                                              : get_meta(allocator, meta->next_bigger_free, EXPECT_IS_FREE);
+    if (replacement && replacement->size < meta->size)
+        // meta is the biggest free slot -> the new biggest will be next_smaller_free (next_bigger_free is smallest)
+        replacement = get_meta(allocator, meta->next_smaller_free, EXPECT_IS_FREE);
     // must check buckets with size smaller than meta->size if those refer to meta->next_bigger_free
     while (allocator->gpa.bucket_values[bucket_idx] == meta->data) {
-        // must replace with next bigger slot
-        const GPMemorySlotMeta *replacement = is_only_free_slot
-                                                ? NULL
-                                                : get_meta(allocator, meta->next_bigger_free, EXPECT_IS_FREE);
-        if (replacement && replacement->size < meta->size)
-            // meta is the biggest free slot -> the new biggest will be next_smaller_free (next_bigger_free is smallest)
-            replacement = get_meta(allocator, meta->next_smaller_free, EXPECT_IS_FREE);
-        allocator->gpa.bucket_values[bucket_idx] = replacement ? replacement->data : NULL;
+        allocator->gpa.bucket_values[bucket_idx] = replacement && replacement->size >= allocator->gpa.bucket_sizes[
+                                                       bucket_idx]
+                                                       ? replacement->data
+                                                       : NULL;
         if (!bucket_idx--)
             break;
     }
 
-    if (is_only_free_slot)
+    if (is_only_free_slot) {
+        debug_print_leave_fn(allocator->block_logging, "unbind_from_sorted_free_list");
         return;
+    }
 
     // unbind references from sorted free list to consumed slot
     GPMemorySlotMeta *meta_nbf = get_meta(allocator, meta->next_bigger_free, EXPECT_IS_FREE);
@@ -148,10 +212,12 @@ void unbind_from_sorted_free_list(Allocator *allocator, GPMemorySlotMeta *meta) 
     GPMemorySlotMeta *meta_nsf = get_meta(allocator, meta->next_smaller_free, EXPECT_IS_FREE);
     meta_nsf->next_bigger_free = meta->next_bigger_free;
     refresh_checksum_of(allocator, meta_nsf);
+    debug_print_leave_fn(allocator->block_logging, "unbind_from_sorted_free_list");
 }
 
 void insert_into_sorted_free_list(Allocator *allocator, GPMemorySlotMeta *meta) {
-    assert(meta->is_free && "illegal usage");
+    debug_print_enter_fn(allocator->block_logging, "insert_into_sorted_free_list");
+    assert_internal(meta->is_free && "illegal usage");
     size_t bucket_idx = get_bucket_index(allocator, meta->size);
     void *bucket_value = allocator->gpa.bucket_values[bucket_idx];
 
@@ -172,9 +238,11 @@ void insert_into_sorted_free_list(Allocator *allocator, GPMemorySlotMeta *meta) 
         // the next smaller one is just the next_smaller_free of smallest entry
         prev_meta = get_meta(allocator, next_meta->next_smaller_free, EXPECT_IS_FREE);
     } else {
+        int first_iter = 1;
         next_meta = first_in_bucket;
         // find the smallest heap alloc that is bigger
-        while (next_meta->size < meta->size && next_meta->data != smallest_entry) {
+        while (next_meta->size < meta->size && (next_meta->data != smallest_entry || first_iter)) {
+            first_iter = 0;
             GPMemorySlotMeta *next_bigger = get_meta(allocator, next_meta->next_bigger_free, EXPECT_IS_FREE);
             if (next_bigger->size < next_meta->size)
                 break;
@@ -183,7 +251,7 @@ void insert_into_sorted_free_list(Allocator *allocator, GPMemorySlotMeta *meta) 
         prev_meta = get_meta(allocator, next_meta->next_smaller_free, EXPECT_IS_FREE);
     }
 
-    assert(next_meta && prev_meta && "unreachable");
+    assert_internal(next_meta && prev_meta && "unreachable");
 
     // insert into sorted linked list
     meta->next_bigger_free = next_meta->data;
@@ -195,26 +263,15 @@ void insert_into_sorted_free_list(Allocator *allocator, GPMemorySlotMeta *meta) 
     refresh_checksum_of(allocator, meta);
     refresh_checksum_of(allocator, next_meta);
 
-    // fill any buckets this size matches that point to NULL
-    if (!first_in_bucket) {
-        int no_nulls = 1;
-        for (size_t bi = 0; bi < allocator->gpa.num_buckets; bi++) {
-            if (allocator->gpa.bucket_sizes[bi] <= meta->size && !allocator->gpa.bucket_values[bi]) {
-                allocator->gpa.bucket_values[bi] = meta->data;
-                no_nulls = 0;
-            } else {
-                assert((allocator->gpa.bucket_sizes[bi] > meta->size || no_nulls) && "unreachable");
-            }
-        }
-    }
     // must check buckets with size smaller than meta->size if those refer to meta->next_bigger_free
-    while (!first_in_bucket || first_in_bucket == next_meta) {
+    while (!first_in_bucket || meta->size <= first_in_bucket->size) {
         allocator->gpa.bucket_values[bucket_idx] = meta->data;
         if (!bucket_idx--)
             break;
         void *ent = allocator->gpa.bucket_values[bucket_idx];
         first_in_bucket = ent ? get_meta(allocator, ent, EXPECT_IS_FREE) : NULL;
     }
+    debug_print_leave_fn(allocator->block_logging, "insert_into_sorted_free_list");
 }
 
 void refresh_checksum_of(Allocator *allocator, GPMemorySlotMeta *meta) {
@@ -225,11 +282,12 @@ void refresh_checksum_of(Allocator *allocator, GPMemorySlotMeta *meta) {
 
 /// grow an allocated slot into a free slot to the right
 void consume_next_slot(Allocator *allocator, GPMemorySlotMeta *meta, size_t moved_bytes) {
-    assert(!meta->is_free && "only works for allocated slots trying to grow into their free neighbour to the right");
+    debug_print_enter_fn(allocator->block_logging, "consume_next_slot");
+    assert_internal(!meta->is_free && "only works for allocated slots trying to grow into their free neighbour to the right");
     GPMemorySlotMeta *next_meta = get_meta(allocator, meta->next, EXPECT_IS_FREE);
     const ssize_t remaining_size = (ssize_t) (next_meta->size + sizeof(GPMemorySlotMeta)) - (ssize_t) moved_bytes;
-    assert(remaining_size >= 0 && "cannot join: block to join with too small");
-    assert(
+    assert_internal(remaining_size >= 0 && "cannot join: block to join with too small");
+    assert_internal(
         next_meta->data - sizeof(*next_meta) == meta->data + meta->size &&
         "cannot coalesce with slot that is not a contiguous neighbour");
 
@@ -270,15 +328,17 @@ void consume_next_slot(Allocator *allocator, GPMemorySlotMeta *meta, size_t move
         // insert the free slot to the right back into the sorted free list, just at the now appropriate location
         insert_into_sorted_free_list(allocator, next_meta);
     }
+    debug_print_leave_fn(allocator->block_logging, "consume_next_slot");
 }
 
 /// grow a free slot into an allocated slot to the left (opposite of consume_next_slot)
 void consume_prev_slot(Allocator *allocator, GPMemorySlotMeta *meta, size_t moved_bytes) {
-    assert(meta->is_free && "only works for free slots trying to grow into their allocated neighbour to the right");
+    debug_print_enter_fn(allocator->block_logging, "consume_prev_slot");
+    assert_internal(meta->is_free && "only works for free slots trying to grow into their allocated neighbour to the right");
     GPMemorySlotMeta *prev_meta = get_meta(allocator, meta->prev, EXPECT_IS_ALLOCATED);
     const ssize_t remaining_size = (ssize_t) (prev_meta->size + sizeof(GPMemorySlotMeta)) - (ssize_t) moved_bytes;
-    assert(remaining_size >= 0 && "cannot join: block to join with too small");
-    assert(
+    assert_internal(remaining_size >= 0 && "cannot join: block to join with too small");
+    assert_internal(
         meta->data - sizeof(*meta) == prev_meta->data + prev_meta->size &&
         "cannot coalesce with slot that is not a contiguous neighbour");
 
@@ -320,4 +380,5 @@ void consume_prev_slot(Allocator *allocator, GPMemorySlotMeta *meta, size_t move
         // insert the free slot to the right back into the sorted free list, just at the now appropriate location
         insert_into_sorted_free_list(allocator, meta);
     }
+    debug_print_leave_fn(allocator->block_logging, "consume_prev_slot");
 }

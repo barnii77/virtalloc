@@ -2,12 +2,12 @@
 #include "testing.h"
 #include "virtalloc.h"
 #include "virtalloc/gp_memory_slot_meta.h"
-#include "virtalloc/allocator_impl.h"
 
 // TODO add benchmarking against libc
+// TODO write more complex tests (I'm thinking of a json parser or similar that makes lots of allocations)
 
 #define SMALL_HEAP_FLAGS_NO_RR (VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS | VIRTALLOC_FLAG_VA_FEW_BUCKETS | VIRTALLOC_FLAG_VA_NO_RR_ALLOCATOR)
-#define SMALL_HEAP_FLAGS (VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS | VIRTALLOC_FLAG_VA_FEW_BUCKETS)
+#define SMALL_HEAP_FLAGS (VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS | VIRTALLOC_FLAG_VA_FEW_BUCKETS | VIRTALLOC_FLAG_VA_SMA_REQUEST_MEM_FROM_GPA)
 
 #define MAKE_AUTO_INIT_INT_ALLOC(out, size) \
     int *out = virtalloc_malloc(alloc, size * sizeof(int)); \
@@ -30,12 +30,27 @@
         if (mem[i] != size + i) \
             goto fail;
 
+#ifdef VIRTALLOC_LOGGING
+#define print_msg_with_line(msg) \
+    fprintf(stderr, "\n<<<<<<<<<<<<<<< %s on line %d\n", msg, __LINE__);
+
+#define MAKE_AUTO_INIT_DOUBLE_ALLOC(out, size) \
+    fprintf(stderr, "\n<<<<<<<<<<<<<<< allocation of %s on line %d\n", #out, __LINE__); \
+    double *out = virtalloc_malloc(alloc, size * sizeof(double)); \
+    if (!out) \
+        goto fail; \
+    for (int i = 0; i < size; i++) \
+        out[i] = size * 1.5 + i;
+#else
+#define print_msg_with_line(msg)
+
 #define MAKE_AUTO_INIT_DOUBLE_ALLOC(out, size) \
     double *out = virtalloc_malloc(alloc, size * sizeof(double)); \
     if (!out) \
         goto fail; \
     for (int i = 0; i < size; i++) \
         out[i] = size * 1.5 + i;
+#endif
 
 #define ASSERT_DOUBLE_CONTENT(mem, size) \
     if ((size_t) mem % 64 != 0) \
@@ -600,6 +615,74 @@ fail:
     return 1;
 }
 
+int test_fragmentation_and_operations_12() {
+    vap_t alloc = virtalloc_new_allocator(1024 * sizeof(double), SMALL_HEAP_FLAGS_NO_RR);
+    virtalloc_set_max_gpa_slot_checks_before_oom(alloc, 0);
+    virtalloc_set_release_mechanism(alloc, release_memory);
+
+    // Fragment the allocator by allocating and freeing memory in a pattern
+    MAKE_AUTO_INIT_DOUBLE_ALLOC(a, 4);
+    MAKE_AUTO_INIT_DOUBLE_ALLOC(b, 8);
+    MAKE_AUTO_INIT_DOUBLE_ALLOC(c, 16);
+    MAKE_AUTO_INIT_DOUBLE_ALLOC(d, 32);
+    MAKE_AUTO_INIT_DOUBLE_ALLOC(e, 64);
+
+    print_msg_with_line("freeing b");
+    virtalloc_free(alloc, b);
+    print_msg_with_line("freeing d");
+    virtalloc_free(alloc, d);
+
+    // Allocate smaller memory to force fragmentation
+    MAKE_AUTO_INIT_DOUBLE_ALLOC(f, 8);
+    MAKE_AUTO_INIT_DOUBLE_ALLOC(g, 16);
+
+    // Perform realloc on e
+    print_msg_with_line("re-allocing e");
+    double *e_realloc = virtalloc_realloc(alloc, e, 128 * sizeof(double));
+    TEST_ASSERT_MSG(e_realloc, "e realloc failed");
+    TEST_ASSERT_MSG(e_realloc == e, "realloc moved unnecessarily");
+    ASSERT_DOUBLE_CONTENT(e_realloc, 64);
+
+    // Free smaller allocations to create gaps in memory
+    print_msg_with_line("freeing f");
+    virtalloc_free(alloc, f);
+    print_msg_with_line("freeing g");
+    virtalloc_free(alloc, g);
+
+    // Allocate memory to see if the allocator can handle fragmented gaps
+    MAKE_AUTO_INIT_DOUBLE_ALLOC(h, 8);
+    MAKE_AUTO_INIT_DOUBLE_ALLOC(u, 16);
+
+    TEST_ASSERT_MSG(h == f, "h should reuse f's memory slot");
+    TEST_ASSERT_MSG(u == g, "u should reuse g's memory slot");
+
+    // Check realloc growth that fits in existing slots
+    print_msg_with_line("re-allocing c");
+    double *c_realloc = virtalloc_realloc(alloc, c, 32 * sizeof(double));
+    TEST_ASSERT_MSG(c_realloc != NULL, "c realloc failed");
+
+    // Check realloc shrink
+    print_msg_with_line("shrinking e");
+    double *e_shrink = virtalloc_realloc(alloc, e_realloc, 32 * sizeof(double));
+    TEST_ASSERT_MSG(e_shrink != NULL, "e shrink failed");
+    ASSERT_DOUBLE_CONTENT_STARTING_AT(e_shrink, 32, 64);
+
+    // Test allocator's ability to handle edge-case large allocations
+    double *j = virtalloc_malloc(alloc, 512 * sizeof(double));
+    TEST_ASSERT_MSG(j != NULL, "large allocation failed");
+
+    // Assert contents for valid allocations
+    ASSERT_DOUBLE_CONTENT(a, 4);
+    ASSERT_DOUBLE_CONTENT_STARTING_AT(e_shrink, 32, 64);
+    ASSERT_DOUBLE_CONTENT(c_realloc, 16); // Only first 16 should remain valid
+
+    virtalloc_destroy_allocator(alloc);
+    return 0;
+fail:
+    virtalloc_destroy_allocator(alloc);
+    return 1;
+}
+
 BEGIN_RUNNER_SETTINGS()
     print_on_pass = 1;
     print_pre_run_msg = 0;
@@ -620,6 +703,7 @@ BEGIN_TEST_LIST()
     REGISTER_TEST_CASE(monolithic_test_rr_9)
     REGISTER_TEST_CASE(monolithic_test_rr_10)
     REGISTER_TEST_CASE(monolithic_test_rr_11)
+    REGISTER_TEST_CASE(test_fragmentation_and_operations_12)
 END_TEST_LIST()
 
 MAKE_TEST_SUITE_RUNNABLE()
