@@ -85,15 +85,24 @@ GPMemorySlotMeta *get_meta(const Allocator *allocator, void *p, const int should
     }
 #endif
 
-    assert_external(
-        !(allocator->has_checksum && get_checksum(sizeof(*meta) - offsetof(GPMemorySlotMeta, checksum) - sizeof(meta->
-            checksum), (void *) meta + offsetof(GPMemorySlotMeta, checksum) + sizeof(meta->checksum)) != meta->checksum)
-        && "checksum incorrect: you likely passed a pointer to free/realloc that does not correspond to an allocation or otherwise corrupted the allocator's metadata");
+    if (allocator->has_checksum)
+        if ((meta->time_to_checksum_check = (meta->time_to_checksum_check - 1) % allocator->steps_per_checksum_check)
+            == 0)
+            if (get_checksum(sizeof(*meta) - offsetof(GPMemorySlotMeta, checksum) - sizeof(meta->checksum),
+                             (void *) meta + offsetof(GPMemorySlotMeta, checksum) + sizeof(meta->checksum))
+                != meta->checksum)
+                assert_external(
+                get_checksum(sizeof(*meta) - offsetof(GPMemorySlotMeta, checksum) - sizeof(meta->checksum),
+                             (void *) meta + offsetof(GPMemorySlotMeta, checksum) + sizeof(meta->checksum)) && 0 &&
+                "checksum incorrect: you likely passed a pointer to free/realloc that does not correspond to an allocation or otherwise corrupted the allocator's metadata");
+
     if (!allocator->enable_safety_checks) {
         debug_print_leave_fn(allocator->block_logging, "get_meta");
         return meta;
     }
-    assert_external(!(should_be_free != NO_EXPECTATION && !!meta->is_free != should_be_free) && "unexpected allocation status: potential double free");
+    assert_external(
+        !(should_be_free != NO_EXPECTATION && !!meta->is_free != should_be_free) &&
+        "unexpected allocation status: potential double free");
     debug_print_leave_fn(allocator->block_logging, "get_meta");
     return meta;
 }
@@ -148,7 +157,8 @@ void coalesce_memory_slots(Allocator *allocator, GPMemorySlotMeta *meta,
                            const int meta_requires_unbind_from_free_list) {
     debug_print_enter_fn(allocator->block_logging, "coalesce_memory_slots");
     assert_internal(allocator && meta && "illegal usage: allocator and meta must not be NULL");
-    assert_internal(meta->is_free && "illegal usage: can only coalesce a slot with it's neighbours if the slot is free");
+    assert_internal(
+        meta->is_free && "illegal usage: can only coalesce a slot with it's neighbours if the slot is free");
     GPMemorySlotMeta *next_meta = get_meta(allocator, meta->next, NO_EXPECTATION);
     GPMemorySlotMeta *prev_meta = get_meta(allocator, meta->prev, NO_EXPECTATION);
 
@@ -283,7 +293,8 @@ void refresh_checksum_of(Allocator *allocator, GPMemorySlotMeta *meta) {
 /// grow an allocated slot into a free slot to the right
 void consume_next_slot(Allocator *allocator, GPMemorySlotMeta *meta, size_t moved_bytes) {
     debug_print_enter_fn(allocator->block_logging, "consume_next_slot");
-    assert_internal(!meta->is_free && "only works for allocated slots trying to grow into their free neighbour to the right");
+    assert_internal(
+        !meta->is_free && "only works for allocated slots trying to grow into their free neighbour to the right");
     GPMemorySlotMeta *next_meta = get_meta(allocator, meta->next, EXPECT_IS_FREE);
     const ssize_t remaining_size = (ssize_t) (next_meta->size + sizeof(GPMemorySlotMeta)) - (ssize_t) moved_bytes;
     assert_internal(remaining_size >= 0 && "cannot join: block to join with too small");
@@ -334,7 +345,8 @@ void consume_next_slot(Allocator *allocator, GPMemorySlotMeta *meta, size_t move
 /// grow a free slot into an allocated slot to the left (opposite of consume_next_slot)
 void consume_prev_slot(Allocator *allocator, GPMemorySlotMeta *meta, size_t moved_bytes) {
     debug_print_enter_fn(allocator->block_logging, "consume_prev_slot");
-    assert_internal(meta->is_free && "only works for free slots trying to grow into their allocated neighbour to the right");
+    assert_internal(
+        meta->is_free && "only works for free slots trying to grow into their allocated neighbour to the right");
     GPMemorySlotMeta *prev_meta = get_meta(allocator, meta->prev, EXPECT_IS_ALLOCATED);
     const ssize_t remaining_size = (ssize_t) (prev_meta->size + sizeof(GPMemorySlotMeta)) - (ssize_t) moved_bytes;
     assert_internal(remaining_size >= 0 && "cannot join: block to join with too small");

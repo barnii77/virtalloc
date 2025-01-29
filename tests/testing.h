@@ -13,6 +13,8 @@ static int test_name(void) { \
     return !inner_test_name(); \
 }
 
+static int suppress_test_status; // = 0;
+static int print_on_all_passed_this_iter; // = 0;
 static int print_on_pass; // = 0;
 static int print_pre_run_msg; // = 0;
 static int run_all_tests; // = 1;
@@ -44,7 +46,8 @@ static int build_test_cases(const char ***names, int (***tests)(void)) { \
 }
 
 #define BEGIN_RUNNER_SETTINGS() \
-static void init_static_vars() {
+static void init_static_vars() { \
+    suppress_test_status = 0;
 
 #define END_RUNNER_SETTINGS() \
 }
@@ -71,7 +74,8 @@ static void run_tests(void) {
             if (!run_all_tests && strcmp(name, selected_test) != 0)
                 continue;
             n_tests_run++;
-            if (print_pre_run_msg) printAndFlush("Running test %s...\n", name);
+            if (print_pre_run_msg)
+                printAndFlush("Running test %s...\n", name);
             int err = tests[i]();
             if (err) {
                 all_passed = 0;
@@ -83,12 +87,16 @@ static void run_tests(void) {
                 printAndFlush("Test %s... Passed\n", name);
             }
         }
-        if (n_test_reps > 1 && all_passed) printAndFlush("All tests passed this iteration!\n");
-        else if (n_test_reps > 1) printAndFlush("%d/%d tests failed this iteration!\n", n_failed, n_tests_run);
+        if (n_test_reps > 1 && all_passed && print_on_all_passed_this_iter)
+            printAndFlush("All tests passed this iteration!\n");
+        else if (n_test_reps > 1 && print_on_all_passed_this_iter)
+            printAndFlush("%d/%d tests failed this iteration!\n", n_failed, n_tests_run);
     }
-    if (tests_always_passed) printAndFlush("*** ALL %d TEST RUNS OF %d TESTS PASSED (%d SUCCESSFUL RUNS / TEST)! ***\n",
-                                           n_tests_run, n_test_reps * (run_all_tests ? n_tests : 1), n_test_reps);
-    else printAndFlush("*** %d/%d TEST RUNS OF %d TESTS FAILED OVERALL! ***\n", n_total_failed, n_tests_run, n_tests);
+    if (tests_always_passed)
+        printAndFlush("*** ALL %d TEST RUNS OF %d TESTS PASSED (%d SUCCESSFUL RUNS / TEST)! ***\n",
+                  n_tests_run, n_test_reps * (run_all_tests ? n_tests : 1), n_test_reps);
+    else
+        printAndFlush("*** %d/%d TEST RUNS OF %d TESTS FAILED OVERALL! ***\n", n_total_failed, n_tests_run, n_tests);
     free(tests);
     free(names);
 }

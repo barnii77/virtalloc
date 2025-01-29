@@ -63,7 +63,9 @@ vap_t new_virtual_allocator_from_impl(size_t size, char memory[static size], con
         .gpa_add_new_memory = virtalloc_gpa_add_new_memory_impl,
         .sma_add_new_memory = virtalloc_sma_add_new_memory_impl, .release_memory = NULL, .request_new_memory = NULL,
         .pre_alloc_op = virtalloc_pre_op_callback_impl, .post_alloc_op = virtalloc_post_op_callback_impl,
-        .intra_thread_lock_count = 0, .memory_pointer_right_adjustment = right_adjustment,
+        .intra_thread_lock_count = 0,
+        .steps_per_checksum_check = flags & VIRTALLOC_FLAG_VA_DENSE_CHECKSUM_CHECKS ? 1 : STEPS_PER_CHECKSUM_CHECK,
+        .memory_pointer_right_adjustment = right_adjustment,
         .get_gpa_padding_lines = flags & VIRTALLOC_FLAG_VA_HAS_SAFETY_PADDING_LINE ? get_padding_lines_impl : NULL,
         .has_checksum = (flags & VIRTALLOC_FLAG_VA_HAS_CHECKSUM) != 0,
         .enable_safety_checks = (flags & VIRTALLOC_FLAG_VA_HAS_NON_CHECKSUM_SAFETY_CHECKS) != 0,
@@ -94,8 +96,8 @@ vap_t new_virtual_allocator_from_impl(size_t size, char memory[static size], con
         const GPMemorySlotMeta first_slot_meta_content = {
             .checksum = 0, .size = remaining_slot_size, .data = va.gpa.first_slot, .next = va.gpa.first_slot,
             .prev = va.gpa.first_slot, .next_bigger_free = va.gpa.first_slot, .next_smaller_free = va.gpa.first_slot,
-            .is_free = 1, .memory_is_owned = 0, .memory_pointer_right_adjustment = 0, .__bit_padding1 = 0,
-            .__padding = {0}, .__bit_padding2 = 0, .meta_type = GP_META_TYPE_SLOT
+            .time_to_checksum_check = 0, .memory_pointer_right_adjustment = 0, .is_free = 1, .memory_is_owned = 0,
+            .__bit_padding1 = 0, .__padding = {0}, .__bit_padding2 = 0, .meta_type = GP_META_TYPE_SLOT
         };
         *first_slot_meta_ptr = first_slot_meta_content;
         refresh_checksum_of(&va, first_slot_meta_ptr);

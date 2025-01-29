@@ -256,9 +256,9 @@ found:
         void *new_slot_data = meta->data + size + sizeof(GPMemorySlotMeta);
         const GPMemorySlotMeta new_slot_meta_content = {
             .checksum = 0, .size = remaining_bytes - sizeof(GPMemorySlotMeta), .data = new_slot_data,
-            .next = meta->next, .prev = meta->data, .next_bigger_free = NULL, .next_smaller_free = NULL, .is_free = 1,
-            .memory_is_owned = 0, .memory_pointer_right_adjustment = 0, .__bit_padding1 = 0, .__padding = {0},
-            .__bit_padding2 = 0, .meta_type = GP_META_TYPE_SLOT
+            .next = meta->next, .prev = meta->data, .next_bigger_free = NULL, .next_smaller_free = NULL,
+            .time_to_checksum_check = 0, .memory_pointer_right_adjustment = 0, .is_free = 1, .memory_is_owned = 0,
+            .__bit_padding1 = 0, .__padding = {0}, .__bit_padding2 = 0, .meta_type = GP_META_TYPE_SLOT
         };
         GPMemorySlotMeta *new_slot_meta_ptr = new_slot_data - sizeof(GPMemorySlotMeta);
         *new_slot_meta_ptr = new_slot_meta_content;
@@ -390,9 +390,9 @@ void *virtalloc_realloc_impl(Allocator *allocator, void *p, size_t size) {
             void *new_slot_data = meta->data + size + sizeof(GPMemorySlotMeta);
             const GPMemorySlotMeta new_slot_meta_content = {
                 .checksum = 0, .size = shaved_off - sizeof(GPMemorySlotMeta), .data = new_slot_data, .next = meta->next,
-                .prev = meta->data, .next_bigger_free = NULL, .next_smaller_free = NULL, .is_free = 1,
-                .memory_is_owned = 0, .memory_pointer_right_adjustment = 0, .__bit_padding1 = 0, .__padding = {0},
-                .__bit_padding2 = 0, .meta_type = GP_META_TYPE_SLOT
+                .prev = meta->data, .next_bigger_free = NULL, .next_smaller_free = NULL, .time_to_checksum_check = 0,
+                .memory_pointer_right_adjustment = 0, .is_free = 1, .memory_is_owned = 0, .__bit_padding1 = 0,
+                .__padding = {0}, .__bit_padding2 = 0, .meta_type = GP_META_TYPE_SLOT
             };
             GPMemorySlotMeta *new_slot_meta_ptr = new_slot_data - sizeof(GPMemorySlotMeta);
             *new_slot_meta_ptr = new_slot_meta_content;
@@ -466,9 +466,9 @@ void virtalloc_gpa_add_new_memory_impl(Allocator *allocator, void *p, size_t siz
     const GPMemorySlotMeta new_slot_meta_content = {
         .checksum = 0, .size = size - sizeof(GPMemorySlotMeta), .data = slot,
         .next = first_meta ? first_meta->data : slot, .prev = last_meta ? last_meta->data : slot,
-        .next_bigger_free = NULL, .next_smaller_free = NULL, .is_free = 1, .memory_is_owned = 1,
-        .memory_pointer_right_adjustment = right_adjustment, .__bit_padding1 = 0, .__padding = {0}, .__bit_padding2 = 0,
-        .meta_type = GP_META_TYPE_SLOT
+        .next_bigger_free = NULL, .next_smaller_free = NULL, .time_to_checksum_check = 0,
+        .memory_pointer_right_adjustment = right_adjustment, .is_free = 1, .memory_is_owned = 1, .__bit_padding1 = 0,
+        .__padding = {0}, .__bit_padding2 = 0, .meta_type = GP_META_TYPE_SLOT
     };
     *(GPMemorySlotMeta *) p = new_slot_meta_content;
 

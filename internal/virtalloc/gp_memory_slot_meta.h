@@ -11,8 +11,10 @@ typedef struct GenericMemorySlotMeta {
 
 /// the metadata in front of a heap slot
 typedef struct GPMemorySlotMeta {
-    /// a checksum that can help detect double free's
-    size_t checksum;
+    /// how many get_meta calls on this have to be done before get_meta checks the checksum again
+    int time_to_checksum_check;
+    /// a checksum that can help detect double frees and frees/reallocs with invalid pointer
+    int checksum;
     /// size of this slot's data section
     size_t size;
     /// points to the slot start of this slot's data section
@@ -31,6 +33,7 @@ typedef struct GPMemorySlotMeta {
     unsigned char is_free: 1;
     /// whether to call the allocator->release_memory callback on this slot on allocator destruction or not
     unsigned char memory_is_owned: 1;
+    /// bitfield-level padding for the bitfield above (so it doesn't become uninitialized memory)
     unsigned char __bit_padding1: 6;
     /// byte level padding
     char __padding[5];

@@ -34,4 +34,6 @@
 
 #define MIN_SIZE_FOR_SAFETY_PADDING 512
 
+#define STEPS_PER_CHECKSUM_CHECK 16
+
 #endif

@@ -59,6 +59,7 @@ function(add_test_suite name file)
     add_executable(${name}
             ${file}
             tests/testing.h
+            tests/test_utils.h
     )
     target_include_directories(${name} AFTER PRIVATE include/ internal/)
     target_link_libraries(${name} PRIVATE virtalloc)
@@ -66,3 +67,4 @@ endfunction()
 
 # define existing test suites
 add_test_suite(tests tests/tests.c)
+add_test_suite(reference_tests tests/reference_tests.c)

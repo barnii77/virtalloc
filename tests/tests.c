@@ -2,12 +2,29 @@
 #include "testing.h"
 #include "virtalloc.h"
 #include "virtalloc/gp_memory_slot_meta.h"
+#define LARGE_ALLOC_REQUIRED_ALIGN 64
+#include "test_utils.h"
 
-// TODO add benchmarking against libc
-// TODO write more complex tests (I'm thinking of a json parser or similar that makes lots of allocations)
+// TODO construct tests that are actual apples to apples comparisons with libc
+// TODO then profile on those tests where I spend most of my time in virtalloc
+// TODO then make that faster (on current tests, a 10x speedup is required perform like libc, but I will write others)
 
-#define SMALL_HEAP_FLAGS_NO_RR (VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS | VIRTALLOC_FLAG_VA_FEW_BUCKETS | VIRTALLOC_FLAG_VA_NO_RR_ALLOCATOR)
-#define SMALL_HEAP_FLAGS (VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS | VIRTALLOC_FLAG_VA_FEW_BUCKETS | VIRTALLOC_FLAG_VA_SMA_REQUEST_MEM_FROM_GPA)
+#ifdef VIRTALLOC_LOGGING
+#define MAKE_AUTO_INIT_DOUBLE_ALLOC(out, size) \
+    fprintf(stderr, "\n<<<<<<<<<<<<<<< allocation of %s on line %d\n", #out, __LINE__); \
+    double *out = virtalloc_malloc(alloc, size * sizeof(double)); \
+    if (!out) \
+        goto fail; \
+    for (int i = 0; i < size; i++) \
+        out[i] = size * 1.5 + i;
+#else
+#define MAKE_AUTO_INIT_DOUBLE_ALLOC(out, size) \
+    double *out = virtalloc_malloc(alloc, size * sizeof(double)); \
+    if (!out) \
+        goto fail; \
+    for (int i = 0; i < size; i++) \
+        out[i] = size * 1.5 + i;
+#endif
 
 #define MAKE_AUTO_INIT_INT_ALLOC(out, size) \
     int *out = virtalloc_malloc(alloc, size * sizeof(int)); \
@@ -23,65 +40,8 @@
     for (int i = 0; i < size; i++) \
         out[i] = size + i;
 
-#define ASSERT_CORRECT_CONTENT(mem, size) \
-    if ((size_t) mem % 64 != 0) \
-        goto fail; \
-    for (int i = 0; i < size; i++) \
-        if (mem[i] != size + i) \
-            goto fail;
-
-#ifdef VIRTALLOC_LOGGING
-#define print_msg_with_line(msg) \
-    fprintf(stderr, "\n<<<<<<<<<<<<<<< %s on line %d\n", msg, __LINE__);
-
-#define MAKE_AUTO_INIT_DOUBLE_ALLOC(out, size) \
-    fprintf(stderr, "\n<<<<<<<<<<<<<<< allocation of %s on line %d\n", #out, __LINE__); \
-    double *out = virtalloc_malloc(alloc, size * sizeof(double)); \
-    if (!out) \
-        goto fail; \
-    for (int i = 0; i < size; i++) \
-        out[i] = size * 1.5 + i;
-#else
-#define print_msg_with_line(msg)
-
-#define MAKE_AUTO_INIT_DOUBLE_ALLOC(out, size) \
-    double *out = virtalloc_malloc(alloc, size * sizeof(double)); \
-    if (!out) \
-        goto fail; \
-    for (int i = 0; i < size; i++) \
-        out[i] = size * 1.5 + i;
-#endif
-
-#define ASSERT_DOUBLE_CONTENT(mem, size) \
-    if ((size_t) mem % 64 != 0) \
-        goto fail; \
-    for (int i = 0; i < size; i++) \
-        if (mem[i] != size * 1.5 + i) \
-            goto fail;
-
-#define ASSERT_DOUBLE_CONTENT_STARTING_AT(mem, size, start) \
-    if ((size_t) mem % 64 != 0) \
-        goto fail; \
-    for (int i = 0; i < size; i++) \
-        if (mem[i] != start * 1.5 + i) \
-            goto fail;
-
-#define TEST_ASSERT_MSG(expr, msg) \
-    if (!(expr)) { \
-        printf("ASSERTION FAILED: %s\n", msg); \
-        goto fail; \
-    }
-
-// kind of unnecessary in its current form, but it's nice to have for placing breakpoints :)
-void release_memory(void *p) {
-    free(p);
-}
-
-void *request_new_memory(const size_t min_size) {
-    void *mem = malloc(min_size);
-    *(size_t *) mem = min_size;
-    return mem;
-}
+// TODO add benchmarking against libc
+// TODO write more complex tests (I'm thinking of a json parser or similar that makes lots of allocations)
 
 int monolithic_test_1() {
     vap_t alloc = virtalloc_new_allocator(512 * sizeof(int), SMALL_HEAP_FLAGS_NO_RR);
@@ -684,10 +644,12 @@ fail:
 }
 
 BEGIN_RUNNER_SETTINGS()
-    print_on_pass = 1;
+    suppress_test_status = 1;
+    print_on_all_passed_this_iter = 0;
+    print_on_pass = 0;
     print_pre_run_msg = 0;
     run_all_tests = 1;
-    n_test_reps = 1;
+    n_test_reps = 10000;
     selected_test = "";
 END_RUNNER_SETTINGS()
 

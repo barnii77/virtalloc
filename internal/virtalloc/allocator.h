@@ -82,6 +82,8 @@ typedef struct Allocator {
     /// Note that this counter is only used within a thread to keep track of the lock/unlock counts and is thread safe
     /// despite not being atomic because it is only modified in code passages where the allocator is locked already.
     int intra_thread_lock_count;
+    /// how many get_meta calls to do before get_meta checks the checksum once
+    int steps_per_checksum_check;
     /// how many bytes the data pointer has been right adjusted to match the alignment requirements
     unsigned char memory_pointer_right_adjustment;
     /// whether the allocator should compute the checksum for the metadata
