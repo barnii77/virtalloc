@@ -5,7 +5,7 @@
 #define LARGE_ALLOC_REQUIRED_ALIGN 64
 #include "test_utils.h"
 
-// TODO construct tests that are actual apples to apples comparisons with libc
+// TODO I should consider adding a binary tree allocator for particularly large allocation sizes as well (because they don't fit into bins particularly well anymore)
 // TODO then profile on those tests where I spend most of my time in virtalloc
 // TODO then make that faster (on current tests, a 10x speedup is required perform like libc, but I will write others)
 
@@ -39,9 +39,6 @@
         goto fail; \
     for (int i = 0; i < size; i++) \
         out[i] = size + i;
-
-// TODO add benchmarking against libc
-// TODO write more complex tests (I'm thinking of a json parser or similar that makes lots of allocations)
 
 int monolithic_test_1() {
     vap_t alloc = virtalloc_new_allocator(512 * sizeof(int), SMALL_HEAP_FLAGS_NO_RR);

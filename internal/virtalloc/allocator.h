@@ -27,6 +27,8 @@ typedef struct GeneralPurposeAllocator {
     void *first_slot;
     /// number of buckets in bucket_sizes/bucket_pointers
     size_t num_buckets;
+    /// at this size or greater, a slot will be released early and not re-used to save resources
+    size_t min_size_for_early_release;
     /// buckets that slice into the linked list of free slots sorted from smallest to biggest by slot size
     size_t *bucket_sizes;
     /// the smallest free slot that falls into a given bucket category. size is num_buckets.
@@ -104,6 +106,8 @@ typedef struct Allocator {
     unsigned block_logging: 1;
     /// if set, the SMA requests memory using the GPA instead of making a malloc call itself directly
     unsigned sma_request_mem_from_gpa: 1;
+    /// if set, disable bucket mechanism completely
+    unsigned disable_bucket_mechanism: 1;
 } __attribute__((aligned(LARGE_ALLOCATION_ALIGN))) Allocator;
 
 void lock_virtual_allocator(Allocator *allocator);

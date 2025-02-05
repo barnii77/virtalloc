@@ -12,36 +12,30 @@
 #include "virtalloc/small_rr_memory_slot_meta.h"
 #include "virtalloc/helper_macros.h"
 
-size_t get_padding_lines_impl(const size_t allocation_size) {
+static size_t get_padding_lines_impl(const size_t allocation_size) {
     if (allocation_size < MIN_SIZE_FOR_SAFETY_PADDING)
         return 0;
     return 1;
 }
 
-size_t get_num_buckets_from_flags(const int flags) {
-    return flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS
-               ? NUM_BUCKETS_FEW_BUCKETS_MODE
-               : flags & VIRTALLOC_FLAG_VA_MANY_BUCKETS
-                     ? NUM_BUCKETS_MANY_BUCKETS_MODE
-                     : flags & VIRTALLOC_FLAG_VA_MAX_BUCKETS
-                           ? NUM_BUCKETS_MAX_BUCKETS_MODE
-                           : NUM_BUCKETS_NORMAL_BUCKETS_MODE;
+// TODO I should temporarily go back to the previous version with exponential bucket gaps to profile that again to see where the hot loops were in that case and
+// where they are now.
+// FIXME I must have screwed something up very deeply because my optimization that should be a 10x speedup has made things slower... oh is this going to be annoying
+
+static size_t get_min_size_for_early_release_from_flags(const int flags) {
+    return flags & VIRTALLOC_FLAG_VA_KEEP_SIZE_TINY
+               ? EARLY_RELEASE_SIZE_TINY
+               : flags & VIRTALLOC_FLAG_VA_KEEP_SIZE_SMALL
+                     ? EARLY_RELEASE_SIZE_SMALL
+                     : flags & VIRTALLOC_FLAG_VA_KEEP_SIZE_LARGE
+                           ? EARLY_RELEASE_SIZE_LARGE
+                           : EARLY_RELEASE_SIZE_NORMAL;
 }
 
-double get_bucket_growth_factor_from_flags(const int flags) {
-    return flags & VIRTALLOC_FLAG_VA_FEW_BUCKETS
-               ? BUCKET_SIZE_GROWTH_FACTOR_FEW_BUCKETS_MODE
-               : flags & VIRTALLOC_FLAG_VA_MANY_BUCKETS
-                     ? BUCKET_SIZE_GROWTH_FACTOR_MANY_BUCKETS_MODE
-                     : flags & VIRTALLOC_FLAG_VA_MAX_BUCKETS
-                           ? BUCKET_SIZE_GROWTH_FACTOR_MAX_BUCKETS_MODE
-                           : BUCKET_SIZE_GROWTH_FACTOR_NORMAL_BUCKETS_MODE;
-}
-
-vap_t new_virtual_allocator_from_impl(size_t size, char memory[static size], const int flags,
-                                      const int memory_is_owned) {
-    const size_t num_buckets = get_num_buckets_from_flags(flags);
-    const double bucket_growth_factor = get_bucket_growth_factor_from_flags(flags);
+static vap_t new_virtual_allocator_from_impl(size_t size, char memory[static size], const int flags,
+                                             const int memory_is_owned) {
+    const size_t min_size_for_early_release = get_min_size_for_early_release_from_flags(flags);
+    const size_t num_buckets = min_size_for_early_release / LARGE_ALLOCATION_ALIGN;
 
     const size_t right_adjustment = (LARGE_ALLOCATION_ALIGN - (size_t) memory % LARGE_ALLOCATION_ALIGN) %
                                     LARGE_ALLOCATION_ALIGN;
@@ -52,13 +46,18 @@ vap_t new_virtual_allocator_from_impl(size_t size, char memory[static size], con
         return NULL;
     ThreadLock tl;
     init_lock(&tl);
+    int disable_buckets = (flags & VIRTALLOC_FLAG_VA_DISABLE_BUCKETS) != 0;
     Allocator va = {
         .lock = tl,
         .gpa = {
-            .max_slot_checks_before_oom = (size_t) -1, .first_slot = NULL, .num_buckets = num_buckets,
+            .max_slot_checks_before_oom = (size_t) -1, .first_slot = NULL,
+            .num_buckets = disable_buckets ? 1 : num_buckets, .min_size_for_early_release = min_size_for_early_release,
             .bucket_sizes = NULL, .bucket_values = NULL
         },
-        .sma = {.max_slot_checks_before_oom = (size_t) -1, .first_slot = NULL, .last_slot = NULL, .rr_slot = NULL},
+        .sma = {
+            .max_slot_checks_before_oom = (size_t) DEFAULT_EXPLORATION_STEPS_BEFORE_RR_OOM, .first_slot = NULL,
+            .last_slot = NULL, .rr_slot = NULL
+        },
         .malloc = virtalloc_malloc_impl, .free = virtalloc_free_impl, .realloc = virtalloc_realloc_impl,
         .gpa_add_new_memory = virtalloc_gpa_add_new_memory_impl,
         .sma_add_new_memory = virtalloc_sma_add_new_memory_impl, .release_memory = NULL, .request_new_memory = NULL,
@@ -71,7 +70,8 @@ vap_t new_virtual_allocator_from_impl(size_t size, char memory[static size], con
         .enable_safety_checks = (flags & VIRTALLOC_FLAG_VA_HAS_NON_CHECKSUM_SAFETY_CHECKS) != 0,
         .memory_is_owned = memory_is_owned, .release_only_allocator = 1, .assume_thread_safe_usage = 0,
         .no_rr_allocator = (flags & VIRTALLOC_FLAG_VA_NO_RR_ALLOCATOR) != 0, .block_logging = 0,
-        .sma_request_mem_from_gpa = (flags & VIRTALLOC_FLAG_VA_SMA_REQUEST_MEM_FROM_GPA) != 0
+        .sma_request_mem_from_gpa = (flags & VIRTALLOC_FLAG_VA_SMA_REQUEST_MEM_FROM_GPA) != 0,
+        .disable_bucket_mechanism = disable_buckets
     };
     va.gpa.bucket_sizes = (size_t *) &memory[sizeof(Allocator)];
     va.gpa.bucket_values = (void **) &memory[sizeof(Allocator) + va.gpa.num_buckets * sizeof(size_t)];
@@ -82,12 +82,20 @@ vap_t new_virtual_allocator_from_impl(size_t size, char memory[static size], con
         va.gpa.first_slot = NULL;
     *(Allocator *) memory = va;
 
-    // initialize bucket sizes and values
-    double current_bucket_size = MIN_LARGE_ALLOCATION_SIZE;
-    for (size_t i = 0; i < va.gpa.num_buckets; i++) {
-        va.gpa.bucket_sizes[i] = (size_t) current_bucket_size;
-        current_bucket_size *= bucket_growth_factor;
-    }
+    // initialize bucket sizes
+    for (size_t i = 0; i < va.gpa.num_buckets; i++)
+        // this initializes them linearly with a step size of ALIGN which should lead to O(1) malloc/free
+        va.gpa.bucket_sizes[i] = MIN_LARGE_ALLOCATION_SIZE + i * LARGE_ALLOCATION_ALIGN;
+
+    // another approach for initializing:
+    // double current_bucket_size = MIN_LARGE_ALLOCATION_SIZE;
+    // double bucket_growth_factor = /* magic constant like 1.1 here */;
+    // for (size_t i = 0; i < va.gpa.num_buckets; i++) {
+    //     va.gpa.bucket_sizes[i] = (size_t) current_bucket_size;
+    //     current_bucket_size *= bucket_growth_factor;
+    // }
+
+    // initialize bucket values
     memset(va.gpa.bucket_values, 0, va.gpa.num_buckets * sizeof(void *));
 
     // if the remaining memory can be used for a memory slot, initialize it
@@ -95,16 +103,12 @@ vap_t new_virtual_allocator_from_impl(size_t size, char memory[static size], con
         GPMemorySlotMeta *first_slot_meta_ptr = va.gpa.first_slot - sizeof(GPMemorySlotMeta);
         const GPMemorySlotMeta first_slot_meta_content = {
             .checksum = 0, .size = remaining_slot_size, .data = va.gpa.first_slot, .next = va.gpa.first_slot,
-            .prev = va.gpa.first_slot, .next_bigger_free = va.gpa.first_slot, .next_smaller_free = va.gpa.first_slot,
-            .time_to_checksum_check = 0, .memory_pointer_right_adjustment = 0, .is_free = 1, .memory_is_owned = 0,
-            .__bit_padding1 = 0, .__padding = {0}, .__bit_padding2 = 0, .meta_type = GP_META_TYPE_SLOT
+            .prev = va.gpa.first_slot, .next_bigger_free = NULL, .next_smaller_free = NULL, .time_to_checksum_check = 0,
+            .memory_pointer_right_adjustment = 0, .is_free = 1, .memory_is_owned = 0, .__bit_padding1 = 0,
+            .__padding = {0}, .__bit_padding2 = 0, .meta_type = GP_META_TYPE_SLOT
         };
         *first_slot_meta_ptr = first_slot_meta_content;
-        refresh_checksum_of(&va, first_slot_meta_ptr);
-
-        for (size_t bi = 0; bi < va.gpa.num_buckets; bi++)
-            if (va.gpa.bucket_sizes[bi] <= remaining_slot_size)
-                va.gpa.bucket_values[bi] = va.gpa.first_slot;
+        insert_into_sorted_free_list((Allocator *) memory, first_slot_meta_ptr);
     }
 
     return memory;
@@ -115,12 +119,14 @@ vap_t virtalloc_new_allocator_in(const size_t size, char memory[static size], co
 }
 
 vap_t virtalloc_new_allocator(size_t size, const int flags) {
-    const size_t num_buckets = get_num_buckets_from_flags(flags);
-    size += sizeof(Allocator) + num_buckets * sizeof(size_t) + num_buckets * sizeof(void *) + LARGE_ALLOCATION_ALIGN -
-            1;
+    const size_t min_size_for_early_release = get_min_size_for_early_release_from_flags(flags);
+    const size_t num_buckets = min_size_for_early_release / LARGE_ALLOCATION_ALIGN;
+
+    size += sizeof(Allocator) + num_buckets * sizeof(size_t) + num_buckets * sizeof(void *) + LARGE_ALLOCATION_ALIGN;
     char *memory = malloc(size);
     if (!memory)
         return NULL;
+
     vap_t alloc = new_virtual_allocator_from_impl(size, memory, flags, 1);
     if (!alloc)
         return NULL;

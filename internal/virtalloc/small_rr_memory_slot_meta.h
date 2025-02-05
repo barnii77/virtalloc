@@ -3,7 +3,7 @@
 
 typedef struct SmallRRMemorySlotMeta {
     unsigned char is_free: 1;
-    unsigned char meta_type: 7;  // 2 for this struct type
+    unsigned char meta_type: 7;  // 3 for this struct type
 } SmallRRMemorySlotMeta;
 
 /// used for deallocation
@@ -16,7 +16,7 @@ typedef struct SmallRRStartOfMemoryChunkMeta {
 
 typedef struct SmallRRNextSlotLink {
     unsigned char __bit_padding: 1;
-    unsigned char meta_type: 7;  // 3 for this struct type
+    unsigned char meta_type: 7;  // 4 for this struct type
 } SmallRRNextSlotLinkMeta;
 
 #endif

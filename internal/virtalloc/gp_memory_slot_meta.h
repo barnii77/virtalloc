@@ -15,10 +15,10 @@ typedef struct GPMemorySlotMeta {
     int time_to_checksum_check;
     /// a checksum that can help detect double frees and frees/reallocs with invalid pointer
     int checksum;
-    /// size of this slot's data section
-    size_t size;
     /// points to the slot start of this slot's data section
     void *data;
+    /// size of this slot's data section
+    size_t size;
     /// points to the slot start of the next slot after this in memory
     void *next;
     /// points to the slot start of the previous slot before this in memory
@@ -42,5 +42,37 @@ typedef struct GPMemorySlotMeta {
     /// a type identifier for a reflection-like mechanism in the allocator. Always 1 for this struct type.
     unsigned char meta_type: 7;
 } __attribute__((aligned(LARGE_ALLOCATION_ALIGN))) GPMemorySlotMeta;
+
+typedef struct GPEarlyReleaseMeta {
+    /// how many get_meta calls on this have to be done before get_meta checks the checksum again
+    int time_to_checksum_check;
+    /// a checksum that can help detect double frees and frees/reallocs with invalid pointer
+    int checksum;
+    /// pointer to its own data so the checksum can verify some meaningful data
+    void *data;
+    /// size of this slot's data section
+    size_t size;
+    /// byte level padding
+    char __padding[39];
+    /// bitfield-level padding for the meta type
+    unsigned char __bit_padding2: 1;
+    /// a type identifier for a reflection-like mechanism in the allocator. Always 2 for this struct type.
+    unsigned char meta_type: 7;
+} __attribute__((aligned(LARGE_ALLOCATION_ALIGN))) GPEarlyReleaseMeta;
+
+typedef struct GenericGPMeta {
+    /// how many get_meta calls on this have to be done before get_meta checks the checksum again
+    int time_to_checksum_check;
+    /// a checksum that can help detect double frees and frees/reallocs with invalid pointer
+    int checksum;
+    /// byte level padding
+    char __padding[55];
+    /// bitfield-level padding for the meta type
+    unsigned char __bit_padding2: 1;
+    /// a type identifier for a reflection-like mechanism in the allocator. Always 2 for this struct type.
+    unsigned char meta_type: 7;
+} __attribute__((aligned(LARGE_ALLOCATION_ALIGN))) GenericGPMeta;
+
+int get_checksum(const void *meta);
 
 #endif

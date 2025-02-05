@@ -8,7 +8,6 @@ set(VIRTALLOC_LIBRARY_SOURCES
         src/virtalloc.c
         src/checksum.c
         src/thread_sync.c
-        src/fast_hash.c
         src/allocator_utils.c
         src/cross_platform_lock.c
         src/math_utils.c
@@ -16,9 +15,7 @@ set(VIRTALLOC_LIBRARY_SOURCES
 
         internal/virtalloc/allocator.h
         internal/virtalloc/gp_memory_slot_meta.h
-        internal/virtalloc/checksum.h
         internal/virtalloc/allocator_settings.h
-        internal/virtalloc/fast_hash.h
         internal/virtalloc/allocator_impl.h
         internal/virtalloc/allocator_utils.h
         internal/virtalloc/cross_platform_lock.h
@@ -55,9 +52,9 @@ target_include_directories(virtalloc AFTER PUBLIC include/)
 target_include_directories(virtalloc AFTER PRIVATE internal/)
 
 # register a test suite
-function(add_test_suite name file)
+function(add_test_suite name files)
     add_executable(${name}
-            ${file}
+            ${files}
             tests/testing.h
             tests/test_utils.h
     )
@@ -68,3 +65,8 @@ endfunction()
 # define existing test suites
 add_test_suite(tests tests/tests.c)
 add_test_suite(reference_tests tests/reference_tests.c)
+
+add_test_suite(json_parser_bench tests/json_parser/json_parser_virtalloc.c)
+add_test_suite(json_parser_reference tests/json_parser/json_parser.c)
+target_compile_definitions(json_parser_bench PRIVATE TEST_JSON_PARSER)
+target_compile_definitions(json_parser_reference PRIVATE TEST_JSON_PARSER)
