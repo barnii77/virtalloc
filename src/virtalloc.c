@@ -11,6 +11,7 @@
 #include "virtalloc/allocator_utils.h"
 #include "virtalloc/small_rr_memory_slot_meta.h"
 #include "virtalloc/helper_macros.h"
+#include "virtalloc/math_utils.h"
 
 static size_t get_padding_lines_impl(const size_t allocation_size) {
     if (allocation_size < MIN_SIZE_FOR_SAFETY_PADDING)
@@ -73,13 +74,28 @@ static vap_t new_virtual_allocator_from_impl(size_t size, char memory[static siz
         .sma_request_mem_from_gpa = (flags & VIRTALLOC_FLAG_VA_SMA_REQUEST_MEM_FROM_GPA) != 0,
         .disable_bucket_mechanism = disable_buckets
     };
-    va.gpa.bucket_sizes = (size_t *) &memory[sizeof(Allocator)];
-    va.gpa.bucket_values = (void **) &memory[sizeof(Allocator) + va.gpa.num_buckets * sizeof(size_t)];
-    va.gpa.first_slot = memory + sizeof(Allocator) + va.gpa.num_buckets * sizeof(size_t)
-                        + va.gpa.num_buckets * sizeof(void *) + sizeof(GPMemorySlotMeta);
+    size_t mem_offset = sizeof(Allocator);
+
+    // bucket sizes
+    va.gpa.bucket_sizes = (size_t *) &memory[mem_offset];
+    mem_offset += va.gpa.num_buckets * sizeof(size_t);
+
+    // bucket values
+    va.gpa.bucket_values = (void **) &memory[mem_offset];
+    mem_offset += va.gpa.num_buckets * sizeof(void *);
+
+    // bucket tree (NOTE: 1 + 2 + 4 + 8 + ... nodes at tree levels)
+    const size_t n_tree_nodes = 2 * round_to_power_of_2(va.gpa.num_buckets) - 1;
+    va.gpa.bucket_tree = (GPBucketTreeNode *) &memory[mem_offset];
+    mem_offset += n_tree_nodes * sizeof(GPBucketTreeNode);
+
+    // first slot
+    va.gpa.first_slot = &memory[mem_offset + sizeof(GPMemorySlotMeta)];
     const size_t remaining_slot_size = (void *) memory + size - va.gpa.first_slot;
     if (remaining_slot_size < MIN_LARGE_ALLOCATION_SIZE)
         va.gpa.first_slot = NULL;
+
+    // write allocator struct to mem
     *(Allocator *) memory = va;
 
     // initialize bucket sizes
@@ -97,6 +113,18 @@ static vap_t new_virtual_allocator_from_impl(size_t size, char memory[static siz
 
     // initialize bucket values
     memset(va.gpa.bucket_values, 0, va.gpa.num_buckets * sizeof(void *));
+
+    // initialize bucket tree
+    size_t n_tree_levels = ilog2l(n_tree_nodes) + 1;
+    for (size_t j = 0, level = 0; level < n_tree_levels; level++) {
+        for (size_t i = 0; i < 1 << (n_tree_levels - level - 1); i++) {
+            va.gpa.bucket_tree[j++] = (GPBucketTreeNode){
+                .level = level, .bucket_idx = (1 << level) * i, .is_active = 0
+            };
+        }
+    }
+    // bucket tree root is active initially
+    va.gpa.bucket_tree[0].is_active = 1;
 
     // if the remaining memory can be used for a memory slot, initialize it
     if (va.gpa.first_slot) {

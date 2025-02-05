@@ -17,6 +17,15 @@ typedef struct SmallRRAllocator {
     void *rr_slot;
 } SmallRRAllocator;
 
+typedef struct GPBucketTreeNode {
+    /// a leaf node is level 0, root node is level N (where tree has 2^N leaf nodes)
+    size_t level;
+    /// which index in the bucket_values array this node is associated with (i.e. where it stores its bucket value)
+    size_t bucket_idx;
+    /// active boolean
+    unsigned is_active: 1;
+} GPBucketTreeNode;
+
 /// General Purpose Allocator: the main allocator used by default. In practice, it is used for medium and large
 /// allocations (size >= 64 bytes). It maintains a sorted free list with a bucket mechanism to massively reduce the
 /// amount of searched slots. The allocator is thread safe.
@@ -33,6 +42,10 @@ typedef struct GeneralPurposeAllocator {
     size_t *bucket_sizes;
     /// the smallest free slot that falls into a given bucket category. size is num_buckets.
     void **bucket_values;
+    /// the data for a special binary tree which allows for batched bucket modifications by being able to specify that
+    /// "this value counts for all child nodes, don't even look at those", which turns an addition or removal of an
+    /// entry from N writes into at most log(N)
+    GPBucketTreeNode *bucket_tree;
 } GeneralPurposeAllocator;
 
 /// the internal per-allocator data stored in the first sizeof(VA) bytes of the heap

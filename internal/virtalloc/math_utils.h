@@ -9,4 +9,6 @@
 
 size_t round_to_power_of_2(size_t x);
 
+int ilog2l(size_t value);
+
 #endif
