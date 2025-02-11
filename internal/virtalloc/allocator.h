@@ -36,6 +36,8 @@ typedef struct GeneralPurposeAllocator {
     void *first_slot;
     /// number of buckets in bucket_sizes/bucket_pointers
     size_t num_buckets;
+    /// num buckets rounded to next power of 2 (for bucket tree internals)
+    size_t rounded_num_buckets_pow_2;
     /// at this size or greater, a slot will be released early and not re-used to save resources
     size_t min_size_for_early_release;
     /// buckets that slice into the linked list of free slots sorted from smallest to biggest by slot size

@@ -728,8 +728,8 @@ static char *read_file(const char *filename) {
 
 int main(void) {
     /* Initialize the allocator (for example, with 512MB and default settings) */
-    const int flags = (VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS | VIRTALLOC_FLAG_VA_NO_RR_ALLOCATOR) & ~
-                      VIRTALLOC_FLAG_VA_HAS_CHECKSUM;
+    const int flags = (VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS | VIRTALLOC_FLAG_VA_NO_RR_ALLOCATOR);
+                      // & ~VIRTALLOC_FLAG_VA_HAS_CHECKSUM;
     alloc = virtalloc_new_allocator(512 * 1024 * 1024, flags);
     if (!alloc) {
         fprintf(stderr, "Failed to initialize custom allocator.\n");

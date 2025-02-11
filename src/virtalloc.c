@@ -13,15 +13,17 @@
 #include "virtalloc/helper_macros.h"
 #include "virtalloc/math_utils.h"
 
+// TODO I could potentially implement a tiny allocator (for even smaller allocs than the RR one): bit array allocator
+// That allocator might end up being similar to the RR one though (at least regarding the links). It will have separate
+// arenas for different sizes (fully decoupled) and will store a bit array of (is_allocated) at the beginning of a chunk
+// instead of having a 1 byte inline header. This allows me to increase the memory efficiency massively and therefore,
+// I could actually support 4 byte allocations (maybe even 1 byte allocations).
+
 static size_t get_padding_lines_impl(const size_t allocation_size) {
     if (allocation_size < MIN_SIZE_FOR_SAFETY_PADDING)
         return 0;
     return 1;
 }
-
-// TODO I should temporarily go back to the previous version with exponential bucket gaps to profile that again to see where the hot loops were in that case and
-// where they are now.
-// FIXME I must have screwed something up very deeply because my optimization that should be a 10x speedup has made things slower... oh is this going to be annoying
 
 static size_t get_min_size_for_early_release_from_flags(const int flags) {
     return flags & VIRTALLOC_FLAG_VA_KEEP_SIZE_TINY
@@ -35,25 +37,28 @@ static size_t get_min_size_for_early_release_from_flags(const int flags) {
 
 static vap_t new_virtual_allocator_from_impl(size_t size, char memory[static size], const int flags,
                                              const int memory_is_owned) {
+    int disable_buckets = (flags & VIRTALLOC_FLAG_VA_DISABLE_BUCKETS) != 0;
     const size_t min_size_for_early_release = get_min_size_for_early_release_from_flags(flags);
-    const size_t num_buckets = min_size_for_early_release / LARGE_ALLOCATION_ALIGN;
+    const size_t num_buckets = disable_buckets ? 1 : min_size_for_early_release / LARGE_ALLOCATION_ALIGN;
+    const size_t rounded_num_buckets = round_to_power_of_2(num_buckets);
 
     const size_t right_adjustment = (LARGE_ALLOCATION_ALIGN - (size_t) memory % LARGE_ALLOCATION_ALIGN) %
                                     LARGE_ALLOCATION_ALIGN;
     memory += right_adjustment;
     size -= right_adjustment;
 
-    if (size < sizeof(Allocator) + num_buckets * sizeof(size_t) + num_buckets * sizeof(void *))
+    if (size < sizeof(Allocator) + num_buckets * sizeof(size_t) + num_buckets * sizeof(void *) + (
+            2 * rounded_num_buckets - 1) * sizeof(GPBucketTreeNode))
         return NULL;
+
     ThreadLock tl;
     init_lock(&tl);
-    int disable_buckets = (flags & VIRTALLOC_FLAG_VA_DISABLE_BUCKETS) != 0;
     Allocator va = {
         .lock = tl,
         .gpa = {
             .max_slot_checks_before_oom = (size_t) -1, .first_slot = NULL,
-            .num_buckets = disable_buckets ? 1 : num_buckets, .min_size_for_early_release = min_size_for_early_release,
-            .bucket_sizes = NULL, .bucket_values = NULL
+            .num_buckets = num_buckets, .rounded_num_buckets_pow_2 = rounded_num_buckets, .bucket_tree = NULL,
+            .min_size_for_early_release = min_size_for_early_release, .bucket_sizes = NULL, .bucket_values = NULL
         },
         .sma = {
             .max_slot_checks_before_oom = (size_t) DEFAULT_EXPLORATION_STEPS_BEFORE_RR_OOM, .first_slot = NULL,
@@ -85,13 +90,14 @@ static vap_t new_virtual_allocator_from_impl(size_t size, char memory[static siz
     mem_offset += va.gpa.num_buckets * sizeof(void *);
 
     // bucket tree (NOTE: 1 + 2 + 4 + 8 + ... nodes at tree levels)
-    const size_t n_tree_nodes = 2 * round_to_power_of_2(va.gpa.num_buckets) - 1;
+    const size_t n_tree_nodes = 2 * va.gpa.rounded_num_buckets_pow_2 - 1;
     va.gpa.bucket_tree = (GPBucketTreeNode *) &memory[mem_offset];
     mem_offset += n_tree_nodes * sizeof(GPBucketTreeNode);
 
     // first slot
-    va.gpa.first_slot = &memory[mem_offset + sizeof(GPMemorySlotMeta)];
-    const size_t remaining_slot_size = (void *) memory + size - va.gpa.first_slot;
+    mem_offset = align_to(mem_offset + sizeof(GPMemorySlotMeta), LARGE_ALLOCATION_ALIGN);
+    va.gpa.first_slot = &memory[mem_offset];
+    const size_t remaining_slot_size = size < mem_offset ? 0 : (void *) memory + size - va.gpa.first_slot;
     if (remaining_slot_size < MIN_LARGE_ALLOCATION_SIZE)
         va.gpa.first_slot = NULL;
 
@@ -115,13 +121,14 @@ static vap_t new_virtual_allocator_from_impl(size_t size, char memory[static siz
     memset(va.gpa.bucket_values, 0, va.gpa.num_buckets * sizeof(void *));
 
     // initialize bucket tree
-    size_t n_tree_levels = ilog2l(n_tree_nodes) + 1;
-    for (size_t j = 0, level = 0; level < n_tree_levels; level++) {
-        for (size_t i = 0; i < 1 << (n_tree_levels - level - 1); i++) {
-            va.gpa.bucket_tree[j++] = (GPBucketTreeNode){
-                .level = level, .bucket_idx = (1 << level) * i, .is_active = 0
+    size_t n_tree_levels = ilog2l(va.gpa.num_buckets) + 1;
+    for (size_t level = 0; level < n_tree_levels; level++) {
+        const size_t n_inner = 1 << (n_tree_levels - level - 1);
+        const size_t stride = 1 << level;
+        for (size_t i = 0; i < n_inner; i++)
+            va.gpa.bucket_tree[i + n_inner - 1] = (GPBucketTreeNode){
+                .level = level, .bucket_idx = stride * i, .is_active = 0
             };
-        }
     }
     // bucket tree root is active initially
     va.gpa.bucket_tree[0].is_active = 1;
@@ -147,10 +154,13 @@ vap_t virtalloc_new_allocator_in(const size_t size, char memory[static size], co
 }
 
 vap_t virtalloc_new_allocator(size_t size, const int flags) {
+    int disable_buckets = (flags & VIRTALLOC_FLAG_VA_DISABLE_BUCKETS) != 0;
     const size_t min_size_for_early_release = get_min_size_for_early_release_from_flags(flags);
-    const size_t num_buckets = min_size_for_early_release / LARGE_ALLOCATION_ALIGN;
+    const size_t num_buckets = disable_buckets ? 1 : min_size_for_early_release / LARGE_ALLOCATION_ALIGN;
+    const size_t rounded_num_buckets = round_to_power_of_2(num_buckets);
 
-    size += sizeof(Allocator) + num_buckets * sizeof(size_t) + num_buckets * sizeof(void *) + LARGE_ALLOCATION_ALIGN;
+    size += sizeof(Allocator) + num_buckets * sizeof(size_t) + num_buckets * sizeof(void *) + (
+        2 * rounded_num_buckets - 1) * sizeof(GPBucketTreeNode) + LARGE_ALLOCATION_ALIGN;
     char *memory = malloc(size);
     if (!memory)
         return NULL;

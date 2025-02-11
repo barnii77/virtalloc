@@ -134,7 +134,7 @@ fail:
 }
 
 int monolithic_test_3_inner_should_fail() {
-    vap_t alloc = virtalloc_new_allocator(256 * sizeof(int), SMALL_HEAP_FLAGS_NO_RR);
+    vap_t alloc = virtalloc_new_allocator(128 * sizeof(int), SMALL_HEAP_FLAGS_NO_RR);
     virtalloc_set_release_mechanism(alloc, release_memory);
 
     MAKE_AUTO_INIT_INT_ALLOC(x, 2);

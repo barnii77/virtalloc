@@ -20,6 +20,39 @@ static size_t get_gpa_compatible_size(const Allocator *allocator, size_t request
                     LARGE_ALLOCATION_ALIGN);
 }
 
+static void dump_bucket_binary_tree_to_file(FILE *file, const Allocator *allocator) {
+    assert_internal(file && allocator && "illegal usage");
+    fprintf(file, "digraph G {\n");
+    for (size_t i = 0; i < 2 * allocator->gpa.rounded_num_buckets_pow_2 - 1; i++) {
+        // dump bucket tree node to file (generate graph structure)
+        const GPBucketTreeNode *node = &allocator->gpa.bucket_tree[i];
+        const GPBucketTreeNode *left = get_bbt_child(allocator, node, 0);
+        const GPBucketTreeNode *right = get_bbt_child(allocator, node, 1);
+        if (!left || !right) {
+            assert_internal((!left && !right) && "unreachable");
+            continue;
+        }
+        fprintf(file, "    node%zu -> node%zu;\n", i, (size_t) (left - allocator->gpa.bucket_tree));
+        fprintf(file, "    node%zu -> node%zu;\n", i, (size_t) (right - allocator->gpa.bucket_tree));
+    }
+    for (size_t i = 0; i < 2 * allocator->gpa.rounded_num_buckets_pow_2 - 1; i++) {
+        // dump bucket tree node to file (generate node styles)
+        const GPBucketTreeNode *node = &allocator->gpa.bucket_tree[i];
+        const GPBucketTreeNode *left = get_bbt_child(allocator, node, 0);
+        const GPBucketTreeNode *right = get_bbt_child(allocator, node, 1);
+        size_t stride;
+        if (!left || !right) {
+            assert_internal((!left && !right) && "unreachable");
+            stride = 1;
+        } else {
+            stride = 2 * (right->bucket_idx - left->bucket_idx);
+        }
+        const char *style = node->is_active ? "color=yellow, style=filled" : "color=grey, style=filled";
+        fprintf(file, "    node%zu [label=\"node%zu (stride %zu)\", %s];\n", i, i, stride, style);
+    }
+    fprintf(file, "}\n");
+}
+
 void virtalloc_dump_allocator_to_file_impl(FILE *file, Allocator *allocator) {
     assert_external(allocator && "illegal usage: allocator must not be NULL");
     allocator->block_logging = 1; // this function is itself logging, so disable logging
@@ -43,6 +76,9 @@ void virtalloc_dump_allocator_to_file_impl(FILE *file, Allocator *allocator) {
         fprintf(file, "BUCKET %zu: size %zu\n", i + 1, allocator->gpa.bucket_sizes[i]);
         dump_gp_slot_meta_to_file(file, get_meta(allocator, get_bucket_entry(allocator, i), NO_EXPECTATION), i + 1);
     }
+
+    fprintf(file, "\nBUCKET TREE (in graphviz format):\n");
+    dump_bucket_binary_tree_to_file(file, allocator);
 
     // print all slots
     fprintf(file, "\nGENERAL PURPOSE SLOTS:\n");

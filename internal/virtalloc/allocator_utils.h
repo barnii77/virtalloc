@@ -16,7 +16,9 @@ void dump_sm_slot_meta_to_file(FILE *file, SmallRRMemorySlotMeta *meta, size_t s
 
 size_t get_bucket_index(const Allocator *allocator, size_t size);
 
-void *get_bucket_entry(const Allocator *allocator, const size_t bucket_idx);
+GPBucketTreeNode *get_bbt_child(const Allocator *allocator, const GPBucketTreeNode *parent, int get_right_child);
+
+void *get_bucket_entry(const Allocator *allocator, size_t bucket_idx);
 
 void validate_checksum_of(const Allocator *allocator, void *meta, int force_validate);
 

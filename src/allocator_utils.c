@@ -61,10 +61,46 @@ size_t get_bucket_index(const Allocator *allocator, const size_t size) {
     // return binary_search(size, allocator->gpa.num_buckets, allocator->gpa.bucket_sizes);
 }
 
+GPBucketTreeNode *get_bbt_child(const Allocator *allocator, const GPBucketTreeNode *parent,
+                                const int get_right_child) {
+    assert_internal(parent && (get_right_child <= 1) && "illegal argument");
+    if (!parent->level)
+        return NULL;
+
+    const size_t parent_level_offset = (allocator->gpa.rounded_num_buckets_pow_2 >> (parent->level - 1)) - 1;
+    const size_t parent_offset_in_level = (size_t) (parent - allocator->gpa.bucket_tree) - parent_level_offset;
+    const size_t child_level_offset = ((allocator->gpa.rounded_num_buckets_pow_2 << 1) >> (parent->level - 1)) - 1;
+    const size_t child_offset_in_level = parent_offset_in_level * 2 + get_right_child;
+    GPBucketTreeNode *child = &allocator->gpa.bucket_tree[child_level_offset + child_offset_in_level];
+    return child;
+}
+
 void *get_bucket_entry(const Allocator *allocator, const size_t bucket_idx) {
-    // TODO update when I implement the bucket binary trees
     assert_internal(bucket_idx < allocator->gpa.num_buckets && "unreachable");
-    return allocator->gpa.bucket_values[bucket_idx];
+    if (allocator->disable_bucket_mechanism)
+        return allocator->gpa.bucket_values[bucket_idx];
+
+    // traverse binary bucket tree
+    const GPBucketTreeNode *node = allocator->gpa.bucket_tree;
+    assert_internal(node && "unreachable");
+    const size_t bucket_size = allocator->gpa.bucket_sizes[bucket_idx];
+    while (!node->is_active) {
+        assert_internal(node->level && "unreachable");
+        if (node->bucket_idx >= allocator->gpa.num_buckets)
+            return NULL;
+
+        // the smallest size that falls into the right child's region
+        const size_t border = allocator->gpa.bucket_sizes[node->bucket_idx + (1 << (node->level - 1))];
+        if (bucket_size < border)
+            // traverse left child
+            node = get_bbt_child(allocator, node, 0);
+        else
+            // traverse right child
+            node = get_bbt_child(allocator, node, 1);
+        assert_internal(node && "unreachable");
+    }
+
+    return node->bucket_idx < allocator->gpa.num_buckets ? allocator->gpa.bucket_values[node->bucket_idx] : NULL;
 }
 
 void validate_checksum_of(const Allocator *allocator, void *meta, const int force_validate) {
@@ -228,29 +264,135 @@ void coalesce_memory_slots(Allocator *allocator, GPMemorySlotMeta *meta,
     debug_print_leave_fn(allocator->block_logging, "coalesce_slot_with_next");
 }
 
+static void try_coalesce_bbt_children(const Allocator *allocator, GPBucketTreeNode *parent, GPBucketTreeNode *left,
+                                      GPBucketTreeNode *right) {
+    assert_internal(
+        !allocator->disable_bucket_mechanism && left->level == right->level && left->level + 1 == parent->level && !
+        parent->is_active);
+    if (left->is_active && right->is_active && allocator->gpa.bucket_values[left->bucket_idx] == allocator->gpa.
+        bucket_values[right->bucket_idx]) {
+        // don't have to copy the value associated with left (and right) to parent because parent shares an entry slot
+        // in allocator->gpa.bucket_values with left
+        parent->is_active = 1;
+        left->is_active = 0;
+        right->is_active = 0;
+    }
+}
+
+static void split_bucket_tree_node(const Allocator *allocator, GPBucketTreeNode *node, GPBucketTreeNode *left,
+                                   GPBucketTreeNode *right) {
+    left->is_active = 1;
+    right->is_active = 1;
+    allocator->gpa.bucket_values[right->bucket_idx] = allocator->gpa.bucket_values[node->bucket_idx];
+    node->is_active = 0;
+}
+
+static void replace_bucket_entry_impl(const Allocator *allocator, const GPMemorySlotMeta *meta,
+                                      const GPMemorySlotMeta *replacement, GPBucketTreeNode *node) {
+    if (node->bucket_idx >= allocator->gpa.num_buckets)
+        return;
+
+    if (node->is_active) {
+        const size_t bucket_idx = node->bucket_idx;
+        if (allocator->gpa.bucket_values[bucket_idx] == meta->data) {
+            if (replacement && replacement->size < meta->size && replacement->size >= allocator->gpa.bucket_sizes[
+                    bucket_idx] && replacement->size < allocator->gpa.bucket_sizes[
+                    bucket_idx + (1 << node->level) - 1]) {
+                // this is reachable if the biggest slot in the sorted free list is removed (e.g. for being split)
+                GPBucketTreeNode *left = get_bbt_child(allocator, node, 0);
+                GPBucketTreeNode *right = get_bbt_child(allocator, node, 1);
+                split_bucket_tree_node(allocator, node, left, right);
+                replace_bucket_entry_impl(allocator, meta, replacement, left);
+                replace_bucket_entry_impl(allocator, meta, replacement, right);
+                assert_internal(
+                    !(left->is_active && right->is_active && allocator->gpa.bucket_values[left->bucket_idx] == allocator
+                        ->gpa.bucket_values[right->bucket_idx]) && "unreachable");
+            } else {
+                allocator->gpa.bucket_values[bucket_idx] =
+                        replacement && replacement->size >= allocator->gpa.bucket_sizes[bucket_idx]
+                            ? replacement->data
+                            : NULL;
+            }
+        }
+    } else {
+        GPBucketTreeNode *left = get_bbt_child(allocator, node, 0);
+        GPBucketTreeNode *right = get_bbt_child(allocator, node, 1);
+        replace_bucket_entry_impl(allocator, meta, replacement, left);
+        replace_bucket_entry_impl(allocator, meta, replacement, right);
+        try_coalesce_bbt_children(allocator, node, left, right);
+    }
+}
+
 static void replace_bucket_entry(const Allocator *allocator, const GPMemorySlotMeta *meta, size_t bucket_idx,
                                  const GPMemorySlotMeta *replacement) {
-    // TODO adjust when I implement the bucket binary tree
-    while (allocator->gpa.bucket_values[bucket_idx] == meta->data) {
-        allocator->gpa.bucket_values[bucket_idx] = replacement && replacement->size >= allocator->gpa.bucket_sizes[
-                                                       bucket_idx]
-                                                       ? replacement->data
-                                                       : NULL;
-        if (!bucket_idx--)
-            break;
+    if (allocator->disable_bucket_mechanism) {
+        // linearly replace instead
+        while (allocator->gpa.bucket_values[bucket_idx] == meta->data) {
+            allocator->gpa.bucket_values[bucket_idx] = replacement && replacement->size >= allocator->gpa.bucket_sizes[
+                                                           bucket_idx]
+                                                           ? replacement->data
+                                                           : NULL;
+            if (!bucket_idx--)
+                break;
+        }
+    } else {
+        replace_bucket_entry_impl(allocator, meta, replacement, allocator->gpa.bucket_tree);
+    }
+}
+
+static void get_bbt_node_size_bounds_inclusive(const Allocator *allocator, const GPBucketTreeNode *node, size_t *lower,
+                                               size_t *upper) {
+    *lower = allocator->gpa.bucket_sizes[node->bucket_idx];
+    const size_t upper_index = node->bucket_idx + (node->level ? (1 << node->level) - 1 : 0);
+    *upper = allocator->gpa.bucket_sizes[min(upper_index, allocator->gpa.num_buckets - 1)];
+}
+
+static void add_bucket_entry_impl(const Allocator *allocator, const GPMemorySlotMeta *meta, GPBucketTreeNode *node) {
+    if (node->bucket_idx >= allocator->gpa.num_buckets || meta->size < allocator->gpa.bucket_sizes[node->bucket_idx])
+        return;
+
+    if (node->is_active) {
+        const size_t bucket_idx = node->bucket_idx;
+        void *bucket_value = allocator->gpa.bucket_values[bucket_idx];
+        GPMemorySlotMeta *first_in_bucket = bucket_value ? get_meta(allocator, bucket_value, EXPECT_IS_FREE) : NULL;
+        if (!first_in_bucket || meta->size <= first_in_bucket->size) {
+            allocator->gpa.bucket_values[bucket_idx] = meta->data;
+        } else {
+            size_t lower, upper;
+            get_bbt_node_size_bounds_inclusive(allocator, node, &lower, &upper);
+            if (lower < upper && lower <= meta->size && meta->size <= upper) {
+                // must split, deactivate node, activate left and right and re-run for both
+                GPBucketTreeNode *left = get_bbt_child(allocator, node, 0);
+                GPBucketTreeNode *right = get_bbt_child(allocator, node, 1);
+                if (!left || !right)
+                    assert_internal(0 && "unreachable");
+                split_bucket_tree_node(allocator, node, left, right);
+                add_bucket_entry_impl(allocator, meta, left);
+                add_bucket_entry_impl(allocator, meta, right);
+            }
+        }
+    } else {
+        GPBucketTreeNode *left = get_bbt_child(allocator, node, 0);
+        GPBucketTreeNode *right = get_bbt_child(allocator, node, 1);
+        add_bucket_entry_impl(allocator, meta, left);
+        add_bucket_entry_impl(allocator, meta, right);
     }
 }
 
 static void add_bucket_entry(const Allocator *allocator, const GPMemorySlotMeta *meta, size_t bucket_idx) {
-    // TODO adjust when I implement the bucket binary tree
-    void *bucket_value = allocator->gpa.bucket_values[bucket_idx];
-    GPMemorySlotMeta *first_in_bucket = bucket_value ? get_meta(allocator, bucket_value, EXPECT_IS_FREE) : NULL;
-    while (!first_in_bucket || meta->size <= first_in_bucket->size) {
-        allocator->gpa.bucket_values[bucket_idx] = meta->data;
-        if (!bucket_idx--)
-            break;
-        void *ent = allocator->gpa.bucket_values[bucket_idx];
-        first_in_bucket = ent ? get_meta(allocator, ent, EXPECT_IS_FREE) : NULL;
+    if (allocator->disable_bucket_mechanism) {
+        // linearly add instead
+        void *bucket_value = allocator->gpa.bucket_values[bucket_idx];
+        GPMemorySlotMeta *first_in_bucket = bucket_value ? get_meta(allocator, bucket_value, EXPECT_IS_FREE) : NULL;
+        while (!first_in_bucket || meta->size <= first_in_bucket->size) {
+            allocator->gpa.bucket_values[bucket_idx] = meta->data;
+            if (!bucket_idx--)
+                break;
+            void *ent = allocator->gpa.bucket_values[bucket_idx];
+            first_in_bucket = ent ? get_meta(allocator, ent, EXPECT_IS_FREE) : NULL;
+        }
+    } else {
+        add_bucket_entry_impl(allocator, meta, allocator->gpa.bucket_tree);
     }
 }
 
