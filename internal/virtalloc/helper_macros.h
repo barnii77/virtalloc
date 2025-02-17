@@ -27,7 +27,7 @@ void __virtalloc_release_assert_fail(const char *expr, const char *file, int lin
 #ifdef VIRTALLOC_EXTERNAL_ASSERTS_ONLY
 #define assert_internal(expr)
 #else
-#define assert_internal(expr) assert_external(expr);
+#define assert_internal(expr) assert_external(expr)
 #endif
 
 #endif

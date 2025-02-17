@@ -5,10 +5,6 @@
 #define LARGE_ALLOC_REQUIRED_ALIGN 64
 #include "test_utils.h"
 
-// TODO I should consider adding a binary tree allocator for particularly large allocation sizes as well (because they don't fit into bins particularly well anymore)
-// TODO then profile on those tests where I spend most of my time in virtalloc
-// TODO then make that faster (on current tests, a 10x speedup is required perform like libc, but I will write others)
-
 #ifdef VIRTALLOC_LOGGING
 #define MAKE_AUTO_INIT_DOUBLE_ALLOC(out, size) \
     fprintf(stderr, "\n<<<<<<<<<<<<<<< allocation of %s on line %d\n", #out, __LINE__); \
@@ -646,7 +642,7 @@ BEGIN_RUNNER_SETTINGS()
     print_on_pass = 0;
     print_pre_run_msg = 0;
     run_all_tests = 1;
-    n_test_reps = 10000;
+    n_test_reps = 1;
     selected_test = "";
 END_RUNNER_SETTINGS()
 

@@ -104,25 +104,25 @@ typedef struct Allocator {
     /// how many bytes the data pointer has been right adjusted to match the alignment requirements
     unsigned char memory_pointer_right_adjustment;
     /// whether the allocator should compute the checksum for the metadata
-    unsigned has_checksum: 1;
+    unsigned char has_checksum: 1;
     /// whether to enable some basic safety checks or not
-    unsigned enable_safety_checks: 1;
+    unsigned char enable_safety_checks: 1;
     /// set only if the VA's underlying memory is owned (used in free_virtual_allocator for user foot gun protection)
-    unsigned memory_is_owned: 1;
+    unsigned char memory_is_owned: 1;
     /// if set, when destroying a VA, the release will not traverse the entire heap and instead only call
     /// allocator->release_memory on the allocator itself
-    unsigned release_only_allocator: 1;
+    unsigned char release_only_allocator: 1;
     /// may be set if the user guarantees thread safe usage of the allocator to remove the global allocator lock
-    unsigned assume_thread_safe_usage: 1;
+    unsigned char assume_thread_safe_usage: 1;
     /// if set, disables the round-robin allocator for small allocations
-    unsigned no_rr_allocator: 1;
+    unsigned char no_rr_allocator: 1;
     /// temporarily disables the most verbose of logging, e.g. if a function for logging makes a bunch of calls to
     /// another function that would do logging every time as well
-    unsigned block_logging: 1;
+    unsigned char block_logging: 1;
     /// if set, the SMA requests memory using the GPA instead of making a malloc call itself directly
-    unsigned sma_request_mem_from_gpa: 1;
-    /// if set, disable bucket mechanism completely
-    unsigned disable_bucket_mechanism: 1;
+    unsigned char sma_request_mem_from_gpa: 1;
+    /// decides what type of bucket strategy to use (none, tree, arena)
+    unsigned char bucket_strategy;
 } __attribute__((aligned(LARGE_ALLOCATION_ALIGN))) Allocator;
 
 void lock_virtual_allocator(Allocator *allocator);

@@ -39,14 +39,16 @@ static void *virtalloc_malloc_wrapper(vap_t allocator, size_t size) {
     call_count++;
     void *out = virtalloc_malloc(allocator, size);
     if (!out)
-        printf("f %d", call_count);
+        fprintf(stderr, "f in malloc (call nr. %d)\n", call_count);
     return out;
 }
 
 static void *virtalloc_realloc_wrapper(vap_t allocator, void *p, size_t size) {
+    static int call_count = 0;
+    call_count++;
     void *out = virtalloc_realloc(allocator, p, size);
     if (!out)
-        printf("f");
+        fprintf(stderr, "f in realloc (call nr. %d)\n", call_count);
     return out;
 }
 
@@ -728,8 +730,10 @@ static char *read_file(const char *filename) {
 
 int main(void) {
     /* Initialize the allocator (for example, with 512MB and default settings) */
-    const int flags = (VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS | VIRTALLOC_FLAG_VA_NO_RR_ALLOCATOR);
-                      // & ~VIRTALLOC_FLAG_VA_HAS_CHECKSUM;
+    const int flags =
+            (VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS | VIRTALLOC_FLAG_VA_HAS_NON_CHECKSUM_SAFETY_CHECKS |
+             VIRTALLOC_FLAG_VA_ASSUME_THREAD_SAFE_USAGE)
+            & ~(VIRTALLOC_FLAG_VA_HAS_CHECKSUM);
     alloc = virtalloc_new_allocator(512 * 1024 * 1024, flags);
     if (!alloc) {
         fprintf(stderr, "Failed to initialize custom allocator.\n");
@@ -739,7 +743,7 @@ int main(void) {
     /* Read the JSON file */
     char *orig_json = read_file("test_giant.json");
     if (!orig_json) {
-        fprintf(stderr, "Failed to read test.json\n");
+        fprintf(stderr, "Failed to read test_giant.json\n");
         virtalloc_destroy_allocator(alloc);
         return 1;
     }

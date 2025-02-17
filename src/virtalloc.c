@@ -17,7 +17,8 @@
 // That allocator might end up being similar to the RR one though (at least regarding the links). It will have separate
 // arenas for different sizes (fully decoupled) and will store a bit array of (is_allocated) at the beginning of a chunk
 // instead of having a 1 byte inline header. This allows me to increase the memory efficiency massively and therefore,
-// I could actually support 4 byte allocations (maybe even 1 byte allocations).
+// I could actually support 4 byte allocations (maybe even 1 byte allocations). Also, it would improve locality and may
+// make the allocator faster than the RR allocator (which already beats libc in my json parser :)))) )
 
 static size_t get_padding_lines_impl(const size_t allocation_size) {
     if (allocation_size < MIN_SIZE_FOR_SAFETY_PADDING)
@@ -53,6 +54,19 @@ static vap_t new_virtual_allocator_from_impl(size_t size, char memory[static siz
 
     ThreadLock tl;
     init_lock(&tl);
+
+    int bucket_strat = disable_buckets
+                           ? NO_BUCKETS
+                           : (flags & VIRTALLOC_FLAG_VA_BUCKET_TREE) != 0
+                                 ? BUCKET_TREE
+                                 : (flags & VIRTALLOC_FLAG_VA_BUCKET_ARENAS) != 0
+                                       ? BUCKET_ARENAS
+                                       : -1;
+    if (bucket_strat < 0)
+        assert_external(
+        0 &&
+        "you must explicitly select a bucket strategy when creating an allocator - passing VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS does that for you. Have you masked out the bucket strategy from it or passed 0 for `flags` instead?");
+
     Allocator va = {
         .lock = tl,
         .gpa = {
@@ -74,10 +88,11 @@ static vap_t new_virtual_allocator_from_impl(size_t size, char memory[static siz
         .get_gpa_padding_lines = flags & VIRTALLOC_FLAG_VA_HAS_SAFETY_PADDING_LINE ? get_padding_lines_impl : NULL,
         .has_checksum = (flags & VIRTALLOC_FLAG_VA_HAS_CHECKSUM) != 0,
         .enable_safety_checks = (flags & VIRTALLOC_FLAG_VA_HAS_NON_CHECKSUM_SAFETY_CHECKS) != 0,
-        .memory_is_owned = memory_is_owned, .release_only_allocator = 1, .assume_thread_safe_usage = 0,
+        .memory_is_owned = memory_is_owned, .release_only_allocator = 1,
+        .assume_thread_safe_usage = (flags & VIRTALLOC_FLAG_VA_ASSUME_THREAD_SAFE_USAGE) != 0,
         .no_rr_allocator = (flags & VIRTALLOC_FLAG_VA_NO_RR_ALLOCATOR) != 0, .block_logging = 0,
         .sma_request_mem_from_gpa = (flags & VIRTALLOC_FLAG_VA_SMA_REQUEST_MEM_FROM_GPA) != 0,
-        .disable_bucket_mechanism = disable_buckets
+        .bucket_strategy = bucket_strat
     };
     size_t mem_offset = sizeof(Allocator);
 
@@ -90,9 +105,11 @@ static vap_t new_virtual_allocator_from_impl(size_t size, char memory[static siz
     mem_offset += va.gpa.num_buckets * sizeof(void *);
 
     // bucket tree (NOTE: 1 + 2 + 4 + 8 + ... nodes at tree levels)
-    const size_t n_tree_nodes = 2 * va.gpa.rounded_num_buckets_pow_2 - 1;
-    va.gpa.bucket_tree = (GPBucketTreeNode *) &memory[mem_offset];
-    mem_offset += n_tree_nodes * sizeof(GPBucketTreeNode);
+    if (va.bucket_strategy == BUCKET_TREE) {
+        const size_t n_tree_nodes = 2 * va.gpa.rounded_num_buckets_pow_2 - 1;
+        va.gpa.bucket_tree = (GPBucketTreeNode *) &memory[mem_offset];
+        mem_offset += n_tree_nodes * sizeof(GPBucketTreeNode);
+    }
 
     // first slot
     mem_offset = align_to(mem_offset + sizeof(GPMemorySlotMeta), LARGE_ALLOCATION_ALIGN);
@@ -120,18 +137,20 @@ static vap_t new_virtual_allocator_from_impl(size_t size, char memory[static siz
     // initialize bucket values
     memset(va.gpa.bucket_values, 0, va.gpa.num_buckets * sizeof(void *));
 
-    // initialize bucket tree
-    size_t n_tree_levels = ilog2l(va.gpa.num_buckets) + 1;
-    for (size_t level = 0; level < n_tree_levels; level++) {
-        const size_t n_inner = 1 << (n_tree_levels - level - 1);
-        const size_t stride = 1 << level;
-        for (size_t i = 0; i < n_inner; i++)
-            va.gpa.bucket_tree[i + n_inner - 1] = (GPBucketTreeNode){
-                .level = level, .bucket_idx = stride * i, .is_active = 0
-            };
+    if (va.bucket_strategy == BUCKET_TREE) {
+        // initialize bucket tree
+        size_t n_tree_levels = ilog2l(va.gpa.num_buckets) + 1;
+        for (size_t level = 0; level < n_tree_levels; level++) {
+            const size_t n_inner = 1 << (n_tree_levels - level - 1);
+            const size_t stride = 1 << level;
+            for (size_t i = 0; i < n_inner; i++)
+                va.gpa.bucket_tree[i + n_inner - 1] = (GPBucketTreeNode){
+                    .level = level, .bucket_idx = stride * i, .is_active = 0
+                };
+        }
+        // bucket tree root is active initially
+        va.gpa.bucket_tree[0].is_active = 1;
     }
-    // bucket tree root is active initially
-    va.gpa.bucket_tree[0].is_active = 1;
 
     // if the remaining memory can be used for a memory slot, initialize it
     if (va.gpa.first_slot) {
@@ -143,6 +162,8 @@ static vap_t new_virtual_allocator_from_impl(size_t size, char memory[static siz
             .__padding = {0}, .__bit_padding2 = 0, .meta_type = GP_META_TYPE_SLOT
         };
         *first_slot_meta_ptr = first_slot_meta_content;
+        // TODO I feel like when looking at the heap dump this just cannot be right for monolithic test 1 -> first
+        // realloc because there it says the toplevel node is active and says the 4096 bucket points to a 1000 byte slot
         insert_into_sorted_free_list((Allocator *) memory, first_slot_meta_ptr);
     }
 

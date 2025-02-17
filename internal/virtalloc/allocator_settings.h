@@ -33,4 +33,8 @@
 
 #define DEFAULT_EXPLORATION_STEPS_BEFORE_RR_OOM 64
 
+#define NO_BUCKETS 0
+#define BUCKET_TREE 1
+#define BUCKET_ARENAS 2
+
 #endif

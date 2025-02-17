@@ -54,7 +54,7 @@ static size_t binary_search(const size_t needle, const size_t array_size, const 
 
 size_t get_bucket_index(const Allocator *allocator, const size_t size) {
     assert_internal(size >= MIN_LARGE_ALLOCATION_SIZE && "allocation smaller than smallest allowed allocation size");
-    if (allocator->disable_bucket_mechanism)
+    if (allocator->bucket_strategy == NO_BUCKETS)
         return 0;
     return min(allocator->gpa.num_buckets - 1, (size - MIN_LARGE_ALLOCATION_SIZE) / LARGE_ALLOCATION_ALIGN);
     // the more general approach is this binary search, but the above works for how we sample bucket sizes
@@ -77,8 +77,18 @@ GPBucketTreeNode *get_bbt_child(const Allocator *allocator, const GPBucketTreeNo
 
 void *get_bucket_entry(const Allocator *allocator, const size_t bucket_idx) {
     assert_internal(bucket_idx < allocator->gpa.num_buckets && "unreachable");
-    if (allocator->disable_bucket_mechanism)
+    if (allocator->bucket_strategy == NO_BUCKETS) {
+        assert_internal(bucket_idx == 0 && "unreachable");
         return allocator->gpa.bucket_values[bucket_idx];
+    }
+
+    if (allocator->bucket_strategy == BUCKET_ARENAS) {
+        if (allocator->gpa.bucket_values[bucket_idx])
+            return allocator->gpa.bucket_values[bucket_idx];
+        // for bucket arenas specifically, if there is no slot available in the given arena, pick a slot from the
+        // biggest arena, which will probably subsequently be split. This reduces wasted memory while keeping it O(1)
+        return allocator->gpa.bucket_values[allocator->gpa.num_buckets - 1];
+    }
 
     // traverse binary bucket tree
     const GPBucketTreeNode *node = allocator->gpa.bucket_tree;
@@ -267,8 +277,8 @@ void coalesce_memory_slots(Allocator *allocator, GPMemorySlotMeta *meta,
 static void try_coalesce_bbt_children(const Allocator *allocator, GPBucketTreeNode *parent, GPBucketTreeNode *left,
                                       GPBucketTreeNode *right) {
     assert_internal(
-        !allocator->disable_bucket_mechanism && left->level == right->level && left->level + 1 == parent->level && !
-        parent->is_active);
+        allocator->bucket_strategy == BUCKET_TREE && left->level == right->level && left->level + 1 == parent->level &&
+        !parent->is_active);
     if (left->is_active && right->is_active && allocator->gpa.bucket_values[left->bucket_idx] == allocator->gpa.
         bucket_values[right->bucket_idx]) {
         // don't have to copy the value associated with left (and right) to parent because parent shares an entry slot
@@ -323,18 +333,22 @@ static void replace_bucket_entry_impl(const Allocator *allocator, const GPMemory
     }
 }
 
-static void replace_bucket_entry(const Allocator *allocator, const GPMemorySlotMeta *meta, size_t bucket_idx,
+static void replace_bucket_entry(const Allocator *allocator, const GPMemorySlotMeta *meta, const size_t bucket_idx,
                                  const GPMemorySlotMeta *replacement) {
-    if (allocator->disable_bucket_mechanism) {
-        // linearly replace instead
-        while (allocator->gpa.bucket_values[bucket_idx] == meta->data) {
+    assert_internal(meta && "illegal usage");
+    if (allocator->bucket_strategy == NO_BUCKETS || allocator->bucket_strategy == BUCKET_ARENAS) {
+        if (allocator->bucket_strategy == NO_BUCKETS)
+            assert_internal(bucket_idx == 0 && "unreachable");
+        else
+            assert_internal(
+            bucket_idx == get_bucket_index(allocator, meta->size) && (!replacement || bucket_idx == get_bucket_index(
+                allocator, replacement->size)) && "unreachable");
+
+        if (allocator->gpa.bucket_values[bucket_idx] == meta->data)
             allocator->gpa.bucket_values[bucket_idx] = replacement && replacement->size >= allocator->gpa.bucket_sizes[
                                                            bucket_idx]
                                                            ? replacement->data
                                                            : NULL;
-            if (!bucket_idx--)
-                break;
-        }
     } else {
         replace_bucket_entry_impl(allocator, meta, replacement, allocator->gpa.bucket_tree);
     }
@@ -380,17 +394,18 @@ static void add_bucket_entry_impl(const Allocator *allocator, const GPMemorySlot
 }
 
 static void add_bucket_entry(const Allocator *allocator, const GPMemorySlotMeta *meta, size_t bucket_idx) {
-    if (allocator->disable_bucket_mechanism) {
-        // linearly add instead
+    if (allocator->bucket_strategy == NO_BUCKETS || allocator->bucket_strategy == BUCKET_ARENAS) {
+        if (allocator->bucket_strategy == BUCKET_ARENAS) {
+            if (allocator->gpa.bucket_sizes[allocator->gpa.num_buckets - 1] <= meta->size)
+                // the actual arena this belongs to is the last bucket
+                bucket_idx = allocator->gpa.num_buckets - 1;
+        } else {
+            assert_internal(bucket_idx == 0 && "unreachable");
+        }
         void *bucket_value = allocator->gpa.bucket_values[bucket_idx];
         GPMemorySlotMeta *first_in_bucket = bucket_value ? get_meta(allocator, bucket_value, EXPECT_IS_FREE) : NULL;
-        while (!first_in_bucket || meta->size <= first_in_bucket->size) {
+        if (!first_in_bucket || meta->size <= first_in_bucket->size)
             allocator->gpa.bucket_values[bucket_idx] = meta->data;
-            if (!bucket_idx--)
-                break;
-            void *ent = allocator->gpa.bucket_values[bucket_idx];
-            first_in_bucket = ent ? get_meta(allocator, ent, EXPECT_IS_FREE) : NULL;
-        }
     } else {
         add_bucket_entry_impl(allocator, meta, allocator->gpa.bucket_tree);
     }
@@ -435,7 +450,13 @@ void insert_into_sorted_free_list(Allocator *allocator, GPMemorySlotMeta *meta) 
     debug_print_enter_fn(allocator->block_logging, "insert_into_sorted_free_list");
     assert_internal(meta->is_free && "illegal usage");
     const size_t bucket_idx = get_bucket_index(allocator, meta->size);
+
     void *bucket_value = get_bucket_entry(allocator, bucket_idx);
+    if (allocator->bucket_strategy == BUCKET_ARENAS)
+        if (bucket_value == get_bucket_entry(allocator, allocator->gpa.num_buckets - 1))
+            // bucket_value is not the physical entry but rather the fallback to the largest ("all you can eat") arena.
+            // thus, we can conclude the actual physical entry in our bucket must be NULL since we observed a fallback
+            bucket_value = NULL;
 
     meta->next_bigger_free = meta->data;
     meta->next_smaller_free = meta->data;
@@ -447,7 +468,7 @@ void insert_into_sorted_free_list(Allocator *allocator, GPMemorySlotMeta *meta) 
     void *smallest_entry = get_bucket_entry(allocator, 0);
     if (!bucket_value) {
         // next bigger one links to the smallest entry to make the sorted linked list circular
-        if (smallest_entry)
+        if (smallest_entry && allocator->bucket_strategy != BUCKET_ARENAS)
             next_meta = get_meta(allocator, smallest_entry, EXPECT_IS_FREE);
         else
             next_meta = meta;
@@ -480,6 +501,9 @@ void insert_into_sorted_free_list(Allocator *allocator, GPMemorySlotMeta *meta) 
     refresh_checksum_of(allocator, next_meta);
 
     // must check buckets with size smaller than meta->size if those refer to meta->next_bigger_free
+    assert_internal(
+        (bucket_idx == allocator->gpa.num_buckets - 1 || meta->size < allocator->gpa.bucket_sizes[bucket_idx + 1]) &&
+        "unreachable");
     add_bucket_entry(allocator, meta, bucket_idx);
     debug_print_leave_fn(allocator->block_logging, "insert_into_sorted_free_list");
 }

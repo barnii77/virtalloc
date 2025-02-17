@@ -21,7 +21,7 @@ static size_t get_gpa_compatible_size(const Allocator *allocator, size_t request
 }
 
 static void dump_bucket_binary_tree_to_file(FILE *file, const Allocator *allocator) {
-    assert_internal(file && allocator && "illegal usage");
+    assert_internal(file && allocator && allocator->bucket_strategy == BUCKET_TREE && "illegal usage");
     fprintf(file, "digraph G {\n");
     for (size_t i = 0; i < 2 * allocator->gpa.rounded_num_buckets_pow_2 - 1; i++) {
         // dump bucket tree node to file (generate graph structure)
@@ -70,15 +70,30 @@ void virtalloc_dump_allocator_to_file_impl(FILE *file, Allocator *allocator) {
     fprintf(file, " ......\n\n");
 
     // print all the non-null bucket sizes/values
+    fprintf(file, "PHYSICAL BUCKET VALUES:\n");
     for (size_t i = 0; i < allocator->gpa.num_buckets; i++) {
-        if (!get_bucket_entry(allocator, i))
-            continue;
-        fprintf(file, "BUCKET %zu: size %zu\n", i + 1, allocator->gpa.bucket_sizes[i]);
-        dump_gp_slot_meta_to_file(file, get_meta(allocator, get_bucket_entry(allocator, i), NO_EXPECTATION), i + 1);
+        if (!allocator->gpa.bucket_values[i]) {
+            fprintf(file, "BUCKET %zu: size %zu\nNULL ENTRY\n", i + 1, allocator->gpa.bucket_sizes[i]);
+        } else {
+            fprintf(file, "BUCKET %zu: size %zu\n", i + 1, allocator->gpa.bucket_sizes[i]);
+            dump_gp_slot_meta_to_file(file, get_meta(allocator, allocator->gpa.bucket_values[i], NO_EXPECTATION), i + 1);
+        }
     }
 
-    fprintf(file, "\nBUCKET TREE (in graphviz format):\n");
-    dump_bucket_binary_tree_to_file(file, allocator);
+    fprintf(file, "\nSEMANTIC BUCKET VALUES:\n");
+    for (size_t i = 0; i < allocator->gpa.num_buckets; i++) {
+        if (!get_bucket_entry(allocator, i)) {
+            fprintf(file, "BUCKET %zu: size %zu\nNULL ENTRY\n", i + 1, allocator->gpa.bucket_sizes[i]);
+        } else {
+            fprintf(file, "BUCKET %zu: size %zu\n", i + 1, allocator->gpa.bucket_sizes[i]);
+            dump_gp_slot_meta_to_file(file, get_meta(allocator, get_bucket_entry(allocator, i), NO_EXPECTATION), i + 1);
+        }
+    }
+
+    if (allocator->bucket_strategy == BUCKET_TREE) {
+        fprintf(file, "\nBUCKET TREE (in graphviz format):\n");
+        dump_bucket_binary_tree_to_file(file, allocator);
+    }
 
     // print all slots
     fprintf(file, "\nGENERAL PURPOSE SLOTS:\n");
@@ -207,19 +222,6 @@ void *virtalloc_malloc_impl(Allocator *allocator, size_t size, const int is_retr
         return mem + sizeof(GPEarlyReleaseMeta);
     }
 
-    // get the biggest free slot's meta
-    void *smallest_slot = get_bucket_entry(allocator, 0);
-    if (!smallest_slot)
-        // no free slot available
-        goto oom;
-    const GPMemorySlotMeta *smallest_meta = get_meta(allocator, smallest_slot, EXPECT_IS_FREE);
-    // get the biggest free slot (the next smaller one links to the biggest one because the list is circular)
-    const GPMemorySlotMeta *biggest_meta = get_meta(allocator, smallest_meta->next_smaller_free, EXPECT_IS_FREE);
-    const void *biggest_slot = biggest_meta->data;
-    if (biggest_meta->size < size)
-        // cannot allocate that much memory (no slot this big exists)
-        goto oom;
-
     // find the bucket that fits the size (the largest bucket that is still smaller)
     const size_t bucket_idx = get_bucket_index(allocator, size);
     void *attempted_slot = get_bucket_entry(allocator, bucket_idx);
@@ -227,6 +229,21 @@ void *virtalloc_malloc_impl(Allocator *allocator, size_t size, const int is_retr
         // no slot of that size or bigger is available
         goto oom;
     GPMemorySlotMeta *meta = get_meta(allocator, attempted_slot, EXPECT_IS_FREE);
+
+    const GPMemorySlotMeta *biggest_meta;
+    const void *biggest_slot;
+    void *smallest_slot;
+    if (allocator->bucket_strategy == BUCKET_ARENAS) {
+        smallest_slot = NULL;
+        biggest_meta = NULL;
+        biggest_slot = NULL;
+    } else {
+        smallest_slot = get_bucket_entry(allocator, 0);
+        const GPMemorySlotMeta *smallest_meta = get_meta(allocator, smallest_slot, EXPECT_IS_FREE);
+        // get the biggest free slot (the next smaller one links to the biggest one because the list is circular)
+        biggest_meta = get_meta(allocator, smallest_meta->next_smaller_free, EXPECT_IS_FREE);
+        biggest_slot = biggest_meta->data;
+    }
 
     // try to find the smallest free slot to consume that still fits through forwards exploration (best-fit strategy)
     int is_first_iter = 1;
@@ -242,7 +259,7 @@ void *virtalloc_malloc_impl(Allocator *allocator, size_t size, const int is_retr
     if (meta->size >= size)
         // no slot that is big enough was found
         goto found;
-    if (meta->data == smallest_slot || meta->data == starting_slot)
+    if (allocator->bucket_strategy != BUCKET_ARENAS && (meta->data == smallest_slot || meta->data == starting_slot))
         // the biggest slot was definitely checked, and it is not big enough
         goto oom;
 
@@ -251,13 +268,14 @@ void *virtalloc_malloc_impl(Allocator *allocator, size_t size, const int is_retr
         switch (iter_type) {
             case 0:
                 // max slot checks exceeded, try to go down from the next bigger bucket instead (backwards exploration)
-                attempted_slot = bucket_idx == allocator->gpa.num_buckets - 1
+                attempted_slot = bucket_idx == allocator->gpa.num_buckets - 1 || allocator->bucket_strategy ==
+                                 BUCKET_ARENAS
                                      ? NULL
                                      : get_bucket_entry(allocator, bucket_idx + 1);
                 break;
             case 1:
                 // the next bigger slot isn't populated, check the biggest slot
-                attempted_slot = biggest_meta->data;
+                attempted_slot = biggest_meta ? biggest_meta->data : NULL;
                 break;
             default:
                 assert_internal(0 && "unreachable");
@@ -621,7 +639,8 @@ void virtalloc_sma_add_new_memory_impl(Allocator *allocator, void *p, size_t siz
         allocator->sma.first_slot = aligned_p + sizeof(SmallRRStartOfMemoryChunkMeta) + sizeof(SmallRRMemorySlotMeta);
         allocator->sma.last_slot = p;
     }
-    allocator->sma.rr_slot = p; // guaranteed free memory (also happens to be an easy OOM fix)
+    // guaranteed free memory (also happens to be an easy OOM fix)
+    allocator->sma.rr_slot = aligned_p + sizeof(SmallRRStartOfMemoryChunkMeta) + sizeof(SmallRRMemorySlotMeta);
 
     // since owned slots have been added separately, the heap must be scanned at destroy time for those slots and
     // the release callback must be called on them -> enable that behavior
