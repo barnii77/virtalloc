@@ -14,7 +14,7 @@
 #endif
 
 #ifndef MIN_NEW_MEM_REQUEST_SIZE  // this ifndef is to allow the user to define these in the build system
-#define MIN_NEW_MEM_REQUEST_SIZE (64 * 1024)
+#define MIN_NEW_MEM_REQUEST_SIZE (1024 * 1024)
 #endif
 
 #define EARLY_RELEASE_SIZE_TINY   (   4 * 1024)

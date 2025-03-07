@@ -13,13 +13,6 @@
 #include "virtalloc/helper_macros.h"
 #include "virtalloc/math_utils.h"
 
-// TODO I could potentially implement a tiny allocator (for even smaller allocs than the RR one): bit array allocator
-// That allocator might end up being similar to the RR one though (at least regarding the links). It will have separate
-// arenas for different sizes (fully decoupled) and will store a bit array of (is_allocated) at the beginning of a chunk
-// instead of having a 1 byte inline header. This allows me to increase the memory efficiency massively and therefore,
-// I could actually support 4 byte allocations (maybe even 1 byte allocations). Also, it would improve locality and may
-// make the allocator faster than the RR allocator (which already beats libc in my json parser :)))) )
-
 static size_t get_padding_lines_impl(const size_t allocation_size) {
     if (allocation_size < MIN_SIZE_FOR_SAFETY_PADDING)
         return 0;
@@ -92,6 +85,7 @@ static vap_t new_virtual_allocator_from_impl(size_t size, char memory[static siz
         .assume_thread_safe_usage = (flags & VIRTALLOC_FLAG_VA_ASSUME_THREAD_SAFE_USAGE) != 0,
         .no_rr_allocator = (flags & VIRTALLOC_FLAG_VA_NO_RR_ALLOCATOR) != 0, .block_logging = 0,
         .sma_request_mem_from_gpa = (flags & VIRTALLOC_FLAG_VA_SMA_REQUEST_MEM_FROM_GPA) != 0,
+        .debug_corruption_checks = (flags & VIRTALLOC_FLAG_VA_HEAVY_DEBUG_CORRUPTION_CHECKS) != 0,
         .bucket_strategy = bucket_strat
     };
     size_t mem_offset = sizeof(Allocator);
@@ -162,8 +156,6 @@ static vap_t new_virtual_allocator_from_impl(size_t size, char memory[static siz
             .__padding = {0}, .__bit_padding2 = 0, .meta_type = GP_META_TYPE_SLOT
         };
         *first_slot_meta_ptr = first_slot_meta_content;
-        // TODO I feel like when looking at the heap dump this just cannot be right for monolithic test 1 -> first
-        // realloc because there it says the toplevel node is active and says the 4096 bucket points to a 1000 byte slot
         insert_into_sorted_free_list((Allocator *) memory, first_slot_meta_ptr);
     }
 
@@ -303,6 +295,18 @@ void virtalloc_set_max_sma_slot_checks_before_oom(vap_t allocator, const size_t 
     alloc->sma.max_slot_checks_before_oom = max_slot_checks;
 }
 
-void virtalloc_dump_allocator_metadata_to_file(FILE *file, vap_t allocator) {
+void virtalloc_dump_allocator_to_file(FILE *file, vap_t allocator) {
     virtalloc_dump_allocator_to_file_impl(file, allocator);
+}
+
+/// Expect a 1000x slowdown. Makes debugging much more manageable because it usually crashes the moment a corruption
+/// happens, letting you pinpoint when things started going wrong.
+void virtalloc_enable_heavy_debug_allocator_corruption_checks(vap_t allocator) {
+    Allocator *alloc = allocator;
+    alloc->debug_corruption_checks = 1;
+}
+
+void virtalloc_disable_heavy_debug_allocator_corruption_checks(vap_t allocator) {
+    Allocator *alloc = allocator;
+    alloc->debug_corruption_checks = 0;
 }

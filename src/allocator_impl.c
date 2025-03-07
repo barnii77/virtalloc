@@ -1,4 +1,3 @@
-#include <assert.h>
 #include <stdio.h>
 #include <memory.h>
 #include <stddef.h>
@@ -10,6 +9,7 @@
 #include "virtalloc/allocator_settings.h"
 #include "virtalloc/math_utils.h"
 #include "virtalloc/helper_macros.h"
+#include "virtalloc/check_allocator.h"
 
 /// pad to alignment requirement and add safety padding to prevent off-by-1 bugs on the user end
 static size_t get_gpa_compatible_size(const Allocator *allocator, size_t requested_size) {
@@ -18,6 +18,28 @@ static size_t get_gpa_compatible_size(const Allocator *allocator, size_t request
                           : 0;
     return align_to(requested_size < MIN_LARGE_ALLOCATION_SIZE ? MIN_LARGE_ALLOCATION_SIZE : requested_size,
                     LARGE_ALLOCATION_ALIGN);
+}
+
+static void dump_sorted_free_list(FILE *file, const Allocator *allocator) {
+    fprintf(file, "\nSORTED FREE LIST:\n");
+    if (allocator->bucket_strategy == BUCKET_ARENAS) {
+        fprintf(file, "YOU ARE USING ARENAS, THERE ARE A LOT OF SORTED FREE LISTS AND I REFUSE TO PRINT ALL\n");
+    } else {
+        const int num = 1000;
+        int n_iters_left = num;
+        int first_iter = 1;
+        const GPMemorySlotMeta *meta = (GPMemorySlotMeta *) (get_bucket_entry(allocator, 0) - sizeof(GPMemorySlotMeta));
+        size_t cnt = 0;
+        for (void *i = meta->data; --n_iters_left && i != meta->data || first_iter;
+             i = ((GPMemorySlotMeta *) (i - sizeof(GPMemorySlotMeta)))->next_bigger_free, cnt++) {
+            first_iter = 0;
+            GPMemorySlotMeta *im = i - sizeof(GPMemorySlotMeta);
+            validate_checksum_of(allocator, im, 1);
+            dump_gp_slot_meta_to_file(file, im, cnt + 1);
+        }
+        if (n_iters_left == 0)
+            fprintf(file, ".... (there's more)\n");
+    }
 }
 
 static void dump_bucket_binary_tree_to_file(FILE *file, const Allocator *allocator) {
@@ -60,6 +82,11 @@ void virtalloc_dump_allocator_to_file_impl(FILE *file, Allocator *allocator) {
     fprintf(file, "First General Purpose Slot: %p\n", allocator->gpa.first_slot);
     fprintf(file, "First Small Slot: %p\n", allocator->sma.first_slot);
     fprintf(file, "Num Buckets: %zu\n", allocator->gpa.num_buckets);
+    fprintf(file, "Bucket Strategy: %s\n", allocator->bucket_strategy == BUCKET_ARENAS
+                                               ? "Arenas"
+                                               : allocator->bucket_strategy == BUCKET_TREE
+                                                     ? "Bucket Tree"
+                                                     : "Disable Buckets");
     fprintf(file, "Bucket Sizes: ");
     for (size_t i = 0; i < min(16, allocator->gpa.num_buckets); i++)
         fprintf(file, "%zu ", allocator->gpa.bucket_sizes[i]);
@@ -76,7 +103,14 @@ void virtalloc_dump_allocator_to_file_impl(FILE *file, Allocator *allocator) {
             fprintf(file, "BUCKET %zu: size %zu\nNULL ENTRY\n", i + 1, allocator->gpa.bucket_sizes[i]);
         } else {
             fprintf(file, "BUCKET %zu: size %zu\n", i + 1, allocator->gpa.bucket_sizes[i]);
-            dump_gp_slot_meta_to_file(file, get_meta(allocator, allocator->gpa.bucket_values[i], NO_EXPECTATION), i + 1);
+            if (allocator->bucket_strategy != BUCKET_TREE)
+                dump_gp_slot_meta_to_file(file, get_meta(allocator, allocator->gpa.bucket_values[i], NO_EXPECTATION),
+                                          i + 1);
+            else
+                fprintf(
+                    file,
+                    "===== GENERAL PURPOSE SLOT %4zu (%p) =====\nCANNOT PRINT MORE INFO BECAUSE WITH BUCKET TREE IT MIGHT BE INVALID\n",
+                    i + 1, allocator->gpa.bucket_values[i]);
         }
     }
 
@@ -94,6 +128,8 @@ void virtalloc_dump_allocator_to_file_impl(FILE *file, Allocator *allocator) {
         fprintf(file, "\nBUCKET TREE (in graphviz format):\n");
         dump_bucket_binary_tree_to_file(file, allocator);
     }
+
+    dump_sorted_free_list(file, allocator);
 
     // print all slots
     fprintf(file, "\nGENERAL PURPOSE SLOTS:\n");
@@ -146,11 +182,11 @@ static int try_add_new_memory(Allocator *allocator, const size_t min_size, const
     if (using_rr_allocator && allocator->sma_add_new_memory && (
             allocator->request_new_memory || allocator->sma_request_mem_from_gpa)) {
         void *mem;
-        if (allocator->sma_request_mem_from_gpa) {
+        if (allocator->sma_request_mem_from_gpa)
             mem = virtalloc_malloc_impl(allocator, max(min_size, MAX_TINY_ALLOCATION_SIZE), 0);
-        } else {
+        else
             mem = allocator->request_new_memory(min_size);
-        }
+
         if (!mem) {
             debug_print_leave_fn(allocator->block_logging, "try_add_new_memory");
             return 0;
@@ -167,6 +203,7 @@ static int try_add_new_memory(Allocator *allocator, const size_t min_size, const
 }
 
 void *virtalloc_malloc_impl(Allocator *allocator, size_t size, const int is_retry_run) {
+    check_allocator(allocator);
     debug_print_enter_fn(allocator->block_logging, "virtalloc_malloc_impl");
     allocator->pre_alloc_op(allocator);
 
@@ -326,14 +363,13 @@ found:
         meta->size = size;
 
         void *new_slot_data = meta->data + size + sizeof(GPMemorySlotMeta);
-        const GPMemorySlotMeta new_slot_meta_content = {
+        GPMemorySlotMeta *new_slot_meta_ptr = new_slot_data - sizeof(GPMemorySlotMeta);
+        *new_slot_meta_ptr = (GPMemorySlotMeta){
             .checksum = 0, .size = remaining_bytes - sizeof(GPMemorySlotMeta), .data = new_slot_data,
             .next = meta->next, .prev = meta->data, .next_bigger_free = NULL, .next_smaller_free = NULL,
             .time_to_checksum_check = 0, .memory_pointer_right_adjustment = 0, .is_free = 1, .memory_is_owned = 0,
             .__bit_padding1 = 0, .__padding = {0}, .__bit_padding2 = 0, .meta_type = GP_META_TYPE_SLOT
         };
-        GPMemorySlotMeta *new_slot_meta_ptr = new_slot_data - sizeof(GPMemorySlotMeta);
-        *new_slot_meta_ptr = new_slot_meta_content;
 
         // insert slot into normal linked list
         meta->next = new_slot_data;
@@ -355,8 +391,10 @@ found:
 oom:
     // out of memory (try to request more)
     if (!is_retry_run && try_add_new_memory(
-            allocator, max(size, MIN_NEW_MEM_REQUEST_SIZE) + sizeof(GPMemorySlotMeta) + LARGE_ALLOCATION_ALIGN - 1,
-            using_rr_allocator)) {
+            allocator,
+            max(size, max(allocator->bucket_strategy == BUCKET_ARENAS ? allocator->gpa.bucket_sizes[allocator->gpa.
+                    num_buckets - 1] : 0, MIN_NEW_MEM_REQUEST_SIZE)) + sizeof(GPMemorySlotMeta) + LARGE_ALLOCATION_ALIGN
+            - 1, using_rr_allocator)) {
         // retry by requesting new memory and re-running (can only retry once)
         void *mem = virtalloc_malloc_impl(allocator, size, 1);
         allocator->post_alloc_op(allocator);
@@ -371,6 +409,8 @@ oom:
 }
 
 void virtalloc_free_impl(Allocator *allocator, void *p) {
+    check_allocator(allocator);
+    assert_external(p && "Illegal argument: p (pointer) parameter in virtalloc_free call must be non-null");
     debug_print_enter_fn(allocator->block_logging, "virtalloc_free_impl");
     allocator->pre_alloc_op(allocator);
 
@@ -400,6 +440,7 @@ void virtalloc_free_impl(Allocator *allocator, void *p) {
 }
 
 void *virtalloc_realloc_impl(Allocator *allocator, void *p, size_t size) {
+    check_allocator(allocator);
     debug_print_enter_fn(allocator->block_logging, "virtalloc_realloc_impl");
     allocator->pre_alloc_op(allocator);
 
@@ -440,6 +481,7 @@ void *virtalloc_realloc_impl(Allocator *allocator, void *p, size_t size) {
     }
 
     // pad to alignment requirement and add safety padding to prevent off-by-1 bugs on the user end
+    const size_t og_size = size;
     size = get_gpa_compatible_size(allocator, size);
 
     // normal slots (smaller than the release early size limit) can be grown or shrunk without relocation
@@ -491,12 +533,13 @@ void *virtalloc_realloc_impl(Allocator *allocator, void *p, size_t size) {
             allocator->post_alloc_op(allocator);
             debug_print_leave_fn(allocator->block_logging, "virtalloc_realloc_impl");
             return p;
-        }
-
-        // trying to grow slot
-        if (next_meta->is_free && next_meta->size + sizeof(GPMemorySlotMeta) >= growth_bytes
-            && next_meta->data - sizeof(*next_meta) == meta->data + meta->size) {
-            // can simply grow into the adjacent free space
+        } else if (size == meta->size && (og_size >= MIN_LARGE_ALLOCATION_SIZE || allocator->no_rr_allocator)) {
+            // no need to do anything, except when og_size < MIN_LARGE_ALLOCATION_SIZE. In that case, we want to move
+            // the data to an RR slot (if RRA is enabled) to reduce metadata overhead for small allocations.
+            return p;
+        } else if (size > meta->size && next_meta->is_free && next_meta->size + sizeof(GPMemorySlotMeta) >= growth_bytes
+                   && next_meta->data - sizeof(*next_meta) == meta->data + meta->size) {
+            // trying to grow slot (and there is adjacent free space to grow into)
             consume_next_slot(allocator, meta, growth_bytes);
             allocator->post_alloc_op(allocator);
             debug_print_leave_fn(allocator->block_logging, "virtalloc_realloc_impl");
@@ -512,7 +555,7 @@ void *virtalloc_realloc_impl(Allocator *allocator, void *p, size_t size) {
     }
 
     // must relocate the memory to grow the slot
-    void *new_memory = virtalloc_malloc_impl(allocator, size, 0);
+    void *new_memory = virtalloc_malloc_impl(allocator, og_size, 0);
     if (!new_memory) {
         allocator->post_alloc_op(allocator);
         debug_print_leave_fn(allocator->block_logging, "virtalloc_realloc_impl");
@@ -520,10 +563,10 @@ void *virtalloc_realloc_impl(Allocator *allocator, void *p, size_t size) {
     }
     if (gm->meta_type == GP_META_TYPE_SLOT) {
         const GPMemorySlotMeta *meta = get_meta(allocator, p, EXPECT_IS_ALLOCATED);
-        memmove(new_memory, p, meta->size);
+        memmove(new_memory, p, min(meta->size, og_size));
     } else {
         const GPEarlyReleaseMeta *meta = get_early_rel_meta(allocator, p);
-        memmove(new_memory, p, meta->size);
+        memmove(new_memory, p, min(meta->size, og_size));
     }
     virtalloc_free_impl(allocator, p);
     allocator->post_alloc_op(allocator);
@@ -605,7 +648,7 @@ void virtalloc_sma_add_new_memory_impl(Allocator *allocator, void *p, size_t siz
 
     // add the SmallRRStartOfMemoryChunkMeta
     SmallRRStartOfMemoryChunkMeta mcm = {.must_release_chunk_on_destroy = must_free_later, .__padding = {0}};
-    memcpy(&mcm.memory_chunk_ptr_raw_bytes, &og_p, sizeof(og_p));
+    memmove(&mcm.memory_chunk_ptr_raw_bytes, &og_p, sizeof(og_p));
     *(SmallRRStartOfMemoryChunkMeta *) p = mcm;
     p += sizeof(SmallRRStartOfMemoryChunkMeta);
     size -= sizeof(SmallRRStartOfMemoryChunkMeta);

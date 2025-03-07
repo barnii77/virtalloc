@@ -1,5 +1,5 @@
 /*
- * safe_json_parser.c
+ * json_parser_virtalloc.c
  *
  * A “safe” JSON parser in C in a single file.
  *
@@ -13,7 +13,7 @@
  * This port replaces all libc memory calls with calls to your custom allocator.
  *
  * Compile with:
- *     gcc -std=c99 -Wall -Wextra -DTEST_JSON_PARSER -o safe_json_parser safe_json_parser.c
+ *     gcc -std=c99 -Wall -Wextra -DTEST_JSON_PARSER -o json_parser_virtalloc json_parser_virtalloc.c
  */
 
 #include <stdio.h>
@@ -46,6 +46,9 @@ static void *virtalloc_malloc_wrapper(vap_t allocator, size_t size) {
 static void *virtalloc_realloc_wrapper(vap_t allocator, void *p, size_t size) {
     static int call_count = 0;
     call_count++;
+    if (call_count == 12565) {
+        int a = 0;
+    }
     void *out = virtalloc_realloc(allocator, p, size);
     if (!out)
         fprintf(stderr, "f in realloc (call nr. %d)\n", call_count);
@@ -730,10 +733,11 @@ static char *read_file(const char *filename) {
 
 int main(void) {
     /* Initialize the allocator (for example, with 512MB and default settings) */
-    const int flags =
-            (VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS | VIRTALLOC_FLAG_VA_HAS_NON_CHECKSUM_SAFETY_CHECKS |
-             VIRTALLOC_FLAG_VA_ASSUME_THREAD_SAFE_USAGE)
-            & ~(VIRTALLOC_FLAG_VA_HAS_CHECKSUM);
+    const int flags = VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS;
+    // const int flags =
+    //         (VIRTALLOC_FLAG_VA_DEFAULT_SETTINGS | VIRTALLOC_FLAG_VA_HAS_NON_CHECKSUM_SAFETY_CHECKS |
+    //          VIRTALLOC_FLAG_VA_ASSUME_THREAD_SAFE_USAGE)
+    //         & ~(VIRTALLOC_FLAG_VA_HAS_CHECKSUM);
     alloc = virtalloc_new_allocator(512 * 1024 * 1024, flags);
     if (!alloc) {
         fprintf(stderr, "Failed to initialize custom allocator.\n");

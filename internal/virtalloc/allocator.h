@@ -121,6 +121,8 @@ typedef struct Allocator {
     unsigned char block_logging: 1;
     /// if set, the SMA requests memory using the GPA instead of making a malloc call itself directly
     unsigned char sma_request_mem_from_gpa: 1;
+    /// if set, enables very heavy corruption checks on every malloc/realloc/free call. Useful for debugging only.
+    unsigned char debug_corruption_checks: 1;
     /// decides what type of bucket strategy to use (none, tree, arena)
     unsigned char bucket_strategy;
 } __attribute__((aligned(LARGE_ALLOCATION_ALIGN))) Allocator;

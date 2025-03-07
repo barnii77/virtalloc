@@ -12,6 +12,7 @@ set(VIRTALLOC_LIBRARY_SOURCES
         src/cross_platform_lock.c
         src/math_utils.c
         src/release_assert.c
+        src/check_allocator.c
 
         internal/virtalloc/allocator.h
         internal/virtalloc/gp_memory_slot_meta.h
@@ -22,6 +23,7 @@ set(VIRTALLOC_LIBRARY_SOURCES
         internal/virtalloc/math_utils.h
         internal/virtalloc/small_rr_memory_slot_meta.h
         internal/virtalloc/helper_macros.h
+        internal/virtalloc/check_allocator.h
 
         include/virtalloc.h
 )
@@ -82,3 +84,6 @@ add_test_suite(json_parser_bench tests/json_parser/json_parser_virtalloc.c)
 add_test_suite(json_parser_reference tests/json_parser/json_parser.c)
 target_compile_definitions(json_parser_bench PRIVATE TEST_JSON_PARSER)
 target_compile_definitions(json_parser_reference PRIVATE TEST_JSON_PARSER)
+
+add_test_suite(sim_interpreter_bench tests/simulated_interpreter/virtalloc_sim.c)
+add_test_suite(sim_interpreter_reference tests/simulated_interpreter/reference_sim.c)
